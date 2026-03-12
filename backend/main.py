@@ -1,5 +1,6 @@
 import os
 import math
+import json
 import joblib
 import pandas as pd
 import requests
@@ -38,8 +39,13 @@ try:
     classifier = joblib.load('models/classifier.joblib')
     anomaly_detector = joblib.load('models/anomaly_detector.joblib')
     print("✅ All Models Loaded (XGBoost + Isolation Forest)")
+except FileNotFoundError as e:
+    print(f"❌ Model file missing: {e}")
+except (OSError, ValueError) as e:
+    print(f"❌ Model load failed due to invalid or unreadable file: {e}")
 except Exception as e:
-    print(f"❌ Model Load Error: {e}")
+    # Final fallback: log the unexpected error so it is visible in backend logs.
+    print(f"Unexpected error: {e}")
 
 # --- 4. PHYSICS & RISK UTILITIES ---
 
@@ -111,7 +117,11 @@ async def get_radar(demo: bool = False):
     # 2. Real-time Data Processing
     try:
         resp = requests.get(url, timeout=5)
-        states = resp.json().get('states', []) if resp.status_code == 200 else []
+        resp.raise_for_status()
+        payload = resp.json()
+        if 'states' not in payload:
+            raise KeyError('states')
+        states = payload['states'] or []
         for s in states:
             if None in [s[5], s[6], s[7], s[9], s[11]]: continue
             
@@ -135,8 +145,17 @@ async def get_radar(demo: bool = False):
                 "class": cls_name, "is_anomaly": is_anom, "risk": risk, "dist_nm": round(d_nm, 2),
                 "path": get_trajectory(s[6], s[5], phys['velocity'], phys['heading'])
             })
+    except requests.exceptions.HTTPError:
+        print("API is down or Rate Limited!")
+    except json.JSONDecodeError:
+        print("The data sent by the API was corrupted/invalid JSON")
+    except KeyError:
+        print("The API response format changed - 'states' key missing")
+    except requests.exceptions.RequestException as e:
+        print(f"Network error while fetching OpenSky data: {e}")
     except Exception as e:
-        print(f"⚠️ OpenSky API error: {e}")
+        # Use this only as a final backup, and ALWAYS log the actual error 'e'.
+        print(f"Unexpected error: {e}")
 
     # 3. Fallback: inject demo flights if real API returned nothing
     if len(processed) == 0 or demo:
@@ -224,7 +243,11 @@ async def agent_copilot(data: CopilotRequest):
     try:
         chat = client.chat.completions.create(messages=[{"role": "user", "content": prompt}], model="llama-3.1-8b-instant", temperature=0.1)
         return {"report": chat.choices[0].message.content.strip()}
-    except:
+    except (AttributeError, IndexError, ValueError) as e:
+        print(f"Error while parsing Groq response: {e}")
+        return {"report": "Error connecting to Agentic Brain."}
+    except Exception as e:
+        print(f"Unexpected error: {e}")
         return {"report": "Error connecting to Agentic Brain."}
 
 if __name__ == "__main__":
