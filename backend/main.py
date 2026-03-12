@@ -102,6 +102,7 @@ class CopilotRequest(BaseModel):
 async def get_radar():
     """The main data firehose. Live sources only: adsb.lol → OpenSky."""
     processed = []
+    url = "https://opensky-network.org/api/states/all?lamin=5.0&lomin=65.0&lamax=38.0&lomax=98.0"
 
     # --- Helper: run ML on physics and build a flight record ---
     def process_aircraft(fid, callsign, lat, lon, alt_ft, speed_kts, hdg, vrate_fpm=0.0):
@@ -204,51 +205,83 @@ async def get_radar():
             timeout=12,
             headers={"Accept": "application/json"}
         )
-        if resp.status_code == 200:
-            aircraft = resp.json().get("ac", [])
-            for ac in aircraft:
-                lat = ac.get("lat"); lon = ac.get("lon")
-                alt = ac.get("alt_baro", ac.get("alt_geom"))
-                gs = ac.get("gs")
-                if lat is None or lon is None or alt is None or gs is None:
-                    continue
-                if isinstance(alt, str):  # "ground" case
-                    alt = 0
-                fid = ac.get("hex", "?")
-                cs = (ac.get("flight") or fid).strip()
-                hdg = ac.get("track", ac.get("mag_heading", 0.0)) or 0.0
-                vrate = (ac.get("baro_rate") or 0.0)
-                processed.append(process_aircraft(fid, cs, lat, lon, float(alt), float(gs), float(hdg), float(vrate)))
-            if processed:
-                print(f"✅ adsb.lol: {len(processed)} aircraft (global)")
+        resp.raise_for_status()
+        payload = resp.json()
+        if "ac" not in payload:
+            raise KeyError("ac")
+        aircraft = payload["ac"] or []
+        for ac in aircraft:
+            lat = ac.get("lat")
+            lon = ac.get("lon")
+            alt = ac.get("alt_baro", ac.get("alt_geom"))
+            gs = ac.get("gs")
+            if lat is None or lon is None or alt is None or gs is None:
+                continue
+            if isinstance(alt, str):
+                alt = 0
+            fid = ac.get("hex", "?")
+            cs = (ac.get("flight") or fid).strip()
+            hdg = ac.get("track", ac.get("mag_heading", 0.0)) or 0.0
+            vrate = ac.get("baro_rate") or 0.0
+            processed.append(process_aircraft(fid, cs, lat, lon, float(alt), float(gs), float(hdg), float(vrate)))
+        if processed:
+            print(f"✅ adsb.lol: {len(processed)} aircraft (global)")
+    except requests.exceptions.HTTPError:
+        print("API is down or Rate Limited!")
+    except json.JSONDecodeError:
+        print("The data sent by the API was corrupted/invalid JSON")
+    except KeyError:
+        print("The API response format changed - 'ac' key missing")
+    except requests.exceptions.RequestException as e:
+        print(f"Network error while fetching adsb.lol data: {e}")
     except Exception as e:
-        print(f"⚠️ adsb.lol error: {e}")
+        print(f"Unexpected error: {e}")
 
-    # 2. SECONDARY SOURCE: OpenSky Network — GLOBAL (often rate-limited)
-    if len(processed) == 0:
-        try:
-            resp = requests.get("https://opensky-network.org/api/states/all", timeout=8)
-            states = resp.json().get('states', []) if resp.status_code == 200 else []
-            for s in states:
-                if None in [s[5], s[6], s[7], s[9], s[11]]:
-                    continue
-                alt_ft = s[7] * 3.28084
-                spd_kts = s[9] * 1.94384
-                hdg = s[10] or 0.0
-                vrate = s[11] * 196.85
-                processed.append(process_aircraft(
-                    s[0], (s[1] or "").strip() or "UNKNOWN",
-                    s[6], s[5], alt_ft, spd_kts, hdg, vrate
-                ))
-            if processed:
-                print(f"✅ OpenSky: {len(processed)} aircraft (global)")
-        except Exception as e:
-            print(f"⚠️ OpenSky error: {e}")
+    # 2. Real-time Data Processing
+    try:
+        resp = requests.get(url, timeout=5)
+        resp.raise_for_status()
+        payload = resp.json()
+        if 'states' not in payload:
+            raise KeyError('states')
+        states = payload['states'] or []
+        for s in states:
+            if None in [s[5], s[6], s[7], s[9], s[11]]: continue
+            
+            # Physics match training units (ft, knots, fpm)
+            phys = {'altitude': s[7]*3.28, 'velocity': s[9]*1.94, 'heading': s[10] or 0.0, 'vertical_rate': s[11]*196.8}
+            
+            # AI Inference
+            features = pd.DataFrame([phys])
+            scaled = scaler.transform(features)
+            cls_name = ["Commercial Plane", "Drone", "Bird"][classifier.predict(scaled)[0]]
+            is_anom = bool(anomaly_detector.predict(scaled)[0] == -1 or cls_name != "Commercial Plane")
+            
+            # Scoring & Trajectory
+            d_nm = get_distance_nm(s[6], s[5], RESTRICTED_LAT, RESTRICTED_LON)
+            risk = get_risk_score(phys['altitude'], phys['velocity'], d_nm, is_anom, cls_name == "Drone")
+            
+            processed.append({
+                "flight_id": s[0], "callsign": s[1].strip() or "UKNOWN",
+                "lat": s[6], "lon": s[5], "alt": round(phys['altitude'], 1),
+                "speed": round(phys['velocity'], 1), "hdg": round(phys['heading'], 1),
+                "class": cls_name, "is_anomaly": is_anom, "risk": risk, "dist_nm": round(d_nm, 2),
+                "path": get_trajectory(s[6], s[5], phys['velocity'], phys['heading'])
+            })
+    except requests.exceptions.HTTPError:
+        print("API is down or Rate Limited!")
+    except json.JSONDecodeError:
+        print("The data sent by the API was corrupted/invalid JSON")
+    except KeyError:
+        print("The API response format changed - 'states' key missing")
+    except requests.exceptions.RequestException as e:
+        print(f"Network error while fetching OpenSky data: {e}")
+    except Exception as e:
+        print(f"Unexpected error: {e}")
 
     # 5. BATCH ML INFERENCE — vectorized for speed on thousands of flights
     live_flights = [f for f in processed if "_phys" in f]
     if live_flights:
-        import numpy as np
         phys_list = [f["_phys"] for f in live_flights]
         df = pd.DataFrame(phys_list)
         scaled = scaler.transform(df)
@@ -337,11 +370,9 @@ async def agent_copilot(data: CopilotRequest):
         return {"report": chat.choices[0].message.content.strip()}
     except (AttributeError, IndexError, ValueError) as e:
         print(f"Error while parsing Groq response: {e}")
-        return {"report": "Error connecting to Agentic Brain."}
+        return {"report": local_assessment() + "\n\n(Groq response parse fallback)"}
     except Exception as e:
         print(f"Unexpected error: {e}")
-        return {"report": "Error connecting to Agentic Brain."}
-    except Exception as e:
         return {"report": local_assessment() + f"\n\n(Groq fallback — {e})"}
 
 if __name__ == "__main__":
