@@ -9,7 +9,7 @@ export class AgentPanel {
   private panel: HTMLElement;
   private contentEl: HTMLElement;
   private currentFlight: RadarFlight | null = null;
-  private chatFab!: HTMLElement;
+  private chatFab?: HTMLElement;
   private chatHistory: { role: string; text: string }[] = [];
 
   constructor() {
@@ -42,10 +42,12 @@ export class AgentPanel {
 
     // Create floating chat button
     this.chatFab = document.createElement('button');
-    this.chatFab.className = 'agent-chat-fab';
-    this.chatFab.innerHTML = '🤖';
-    this.chatFab.title = 'Chat with SkyGuard AI';
-    this.chatFab.addEventListener('click', () => this.toggle());
+    if (this.chatFab) {
+      this.chatFab.className = 'agent-chat-fab';
+      this.chatFab.innerHTML = '🤖';
+      this.chatFab.title = 'Chat with SkyGuard AI';
+    }
+    this.chatFab?.addEventListener('click', () => this.toggle());
 
     // Wire close
     this.panel.querySelector('.agent-close')?.addEventListener('click', () => this.hide());
@@ -75,6 +77,14 @@ export class AgentPanel {
   }
 
   getFabElement(): HTMLElement {
+    if (!this.chatFab) {
+      const fallbackFab = document.createElement('button');
+      fallbackFab.className = 'agent-chat-fab';
+      fallbackFab.innerHTML = '🤖';
+      fallbackFab.title = 'Chat with SkyGuard AI';
+      fallbackFab.addEventListener('click', () => this.toggle());
+      this.chatFab = fallbackFab;
+    }
     return this.chatFab;
   }
 
@@ -219,5 +229,6 @@ export class AgentPanel {
   destroy(): void {
     this.overlay.remove();
     this.panel.remove();
+    this.chatFab?.remove();
   }
 }
