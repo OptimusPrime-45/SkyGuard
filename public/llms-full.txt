@@ -1,0 +1,27 @@
+﻿# SkyGuard AI
+
+> AI-powered real-time airspace monitoring with ML threat detection, trajectory prediction, and agentic intelligence.
+
+SkyGuard AI is an airspace intelligence platform providing real-time flight tracking, ML-based anomaly detection, drone identification, and AI-powered threat analysis.
+
+## Key Features
+
+- Real-time flight tracking with radar data from OpenSky Network
+- ML-based anomaly detection for airspace threats (XGBoost + Isolation Forest)
+- Drone and UAV identification
+- AI-powered threat analysis via Groq (Llama 3)
+- Trajectory prediction visualization
+- Interactive map with deck.gl and MapLibre GL JS
+- Weather alerts and day/night overlay
+- No-fly zone monitoring and DGCA compliance
+
+## Tech Stack
+
+- **Frontend**: TypeScript, Vite, MapLibre GL JS, deck.gl, D3.js
+- **Backend**: FastAPI (Python), ML models (scikit-learn, XGBoost, Isolation Forest)
+- **AI**: Groq (Llama 3), agentic threat analysis copilot
+
+## API Endpoints
+
+- GET /api/radar/stream - Real-time radar data firehose with ML classification
+- POST /api/agent/copilot - Agentic AI threat analysis via Llama 3

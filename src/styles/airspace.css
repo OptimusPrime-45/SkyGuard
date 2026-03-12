@@ -1,0 +1,712 @@
+/* ========================================
+   SkyGuard AI Monitor — Component Styles
+   ======================================== */
+
+/* ---------- Threat Center Panel ---------- */
+.threat-center-panel .panel-body { padding: 0; overflow-y: auto; }
+
+.threat-empty {
+  padding: 24px;
+  text-align: center;
+  color: #4a5568;
+  font-size: 13px;
+}
+
+.threat-item {
+  padding: 10px 12px;
+  border-bottom: 1px solid #1e1e1e;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.threat-item:hover { background: #1a1f2e; }
+.threat-item.anomaly { border-left: 3px solid #ff4444; }
+
+.threat-item-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.threat-icon { font-size: 16px; }
+.threat-id { font-weight: 600; font-size: 13px; color: #e5e5e5; }
+.threat-class { font-size: 11px; margin-left: auto; }
+.threat-item-body { display: flex; flex-direction: column; gap: 3px; }
+.threat-metric {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+}
+.threat-label { color: #666; }
+.threat-value { color: #ccc; font-family: 'SF Mono', monospace; }
+.squawk-emergency { color: #ff4444 !important; font-weight: 700; animation: pulse-text 1s infinite; }
+
+.threat-score-bar {
+  margin-top: 6px;
+  height: 3px;
+  background: #1a1a1a;
+  border-radius: 2px;
+  overflow: hidden;
+}
+.threat-score-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.5s ease;
+}
+
+/* ---------- Flight Detail Card ---------- */
+.flight-detail-card {
+  position: fixed;
+  right: 16px;
+  top: 60px;
+  width: 340px;
+  max-height: calc(100vh - 80px);
+  background: #0f1219;
+  border: 1px solid #2a2a2a;
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  z-index: 1000;
+  overflow-y: auto;
+  transition: transform 0.2s ease, opacity 0.2s ease;
+}
+.flight-detail-card.hidden {
+  transform: translateX(360px);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.fdc-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 14px;
+  border-bottom: 1px solid #1e1e1e;
+}
+.fdc-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.fdc-icon { font-size: 20px; }
+.fdc-icon.pulse-red { animation: pulse-glow 1.2s infinite; }
+.fdc-title { margin: 0; font-size: 16px; color: #e5e5e5; }
+.fdc-badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 4px;
+  text-transform: uppercase;
+}
+.fdc-badge-critical { background: #ff4444; color: #fff; }
+.fdc-badge-high { background: #ff6600; color: #fff; }
+.fdc-badge-medium { background: #ffaa00; color: #000; }
+.fdc-badge-low { background: #333; color: #888; }
+.fdc-close {
+  background: none;
+  border: none;
+  color: #666;
+  font-size: 20px;
+  cursor: pointer;
+  padding: 0 4px;
+}
+.fdc-close:hover { color: #fff; }
+
+.fdc-class-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 10px 14px;
+  font-size: 12px;
+  border-bottom: 1px solid #1a1a1a;
+}
+.fdc-class-label { color: #666; }
+.fdc-class-value { font-weight: 600; }
+.class-drone { color: #ff4444; }
+.class-civilian { color: #4488ff; }
+
+.fdc-metrics {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  background: #1a1a1a;
+  border-bottom: 1px solid #1a1a1a;
+}
+.fdc-metric {
+  padding: 10px 14px;
+  background: #0f1219;
+}
+.fdc-metric-label { font-size: 10px; color: #555; text-transform: uppercase; margin-bottom: 2px; }
+.fdc-metric-value { font-size: 14px; color: #e5e5e5; font-family: 'SF Mono', monospace; }
+
+.fdc-anomaly-section {
+  padding: 14px;
+  border-bottom: 1px solid #1a1a1a;
+}
+.fdc-anomaly-label { font-size: 11px; color: #666; margin-bottom: 6px; }
+.fdc-anomaly-bar-bg {
+  height: 6px;
+  background: #1a1a1a;
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 4px;
+}
+.fdc-anomaly-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.5s ease;
+}
+.fdc-anomaly-value {
+  font-size: 18px;
+  font-weight: 700;
+  font-family: 'SF Mono', monospace;
+}
+
+.fdc-position {
+  display: flex;
+  justify-content: space-between;
+  padding: 10px 14px;
+  font-size: 11px;
+  color: #555;
+  border-bottom: 1px solid #1a1a1a;
+}
+
+.fdc-report-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: calc(100% - 28px);
+  margin: 14px;
+  padding: 12px;
+  background: linear-gradient(135deg, #1a3a5c 0%, #0d2240 100%);
+  border: 1px solid #2a5090;
+  border-radius: 6px;
+  color: #4da6ff;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.fdc-report-btn:hover {
+  background: linear-gradient(135deg, #254b73 0%, #1a3a5c 100%);
+  box-shadow: 0 0 20px rgba(77,166,255,0.2);
+}
+.fdc-report-icon { font-size: 18px; }
+
+/* ---------- Agent Panel (RAG Slide-out) ---------- */
+.agent-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.5);
+  z-index: 2000;
+  transition: opacity 0.3s;
+}
+.agent-overlay.hidden { opacity: 0; pointer-events: none; }
+
+.agent-panel {
+  position: fixed;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 480px;
+  max-width: 90vw;
+  background: #0a0e14;
+  border-left: 1px solid #1e2a3a;
+  z-index: 2001;
+  display: flex;
+  flex-direction: column;
+  transform: translateX(0);
+  transition: transform 0.3s ease;
+}
+.agent-panel.hidden { transform: translateX(100%); }
+
+.agent-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  border-bottom: 1px solid #1e2a3a;
+  background: #0d1117;
+}
+.agent-header-left { display: flex; align-items: center; gap: 10px; }
+.agent-logo { font-size: 24px; }
+.agent-title { margin: 0; font-size: 16px; color: #e5e5e5; font-weight: 600; }
+.agent-close {
+  background: none;
+  border: none;
+  color: #666;
+  font-size: 24px;
+  cursor: pointer;
+}
+.agent-close:hover { color: #fff; }
+
+.agent-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+}
+
+.agent-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 20px;
+  text-align: center;
+}
+.agent-empty-icon { font-size: 48px; margin-bottom: 16px; }
+.agent-empty p { color: #555; font-size: 14px; }
+
+.agent-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 40px 20px;
+  text-align: center;
+}
+.agent-spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid #1e2a3a;
+  border-top: 3px solid #4da6ff;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin-bottom: 16px;
+}
+.agent-loading p { color: #aaa; font-size: 14px; margin: 4px 0; }
+.agent-loading-sub { font-size: 12px !important; color: #555 !important; }
+
+.agent-threat-badge {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  border: 1px solid;
+  border-radius: 6px;
+  margin-bottom: 16px;
+  background: rgba(255,68,68,0.05);
+}
+.agent-threat-level { font-weight: 700; font-size: 14px; }
+.agent-analyzed-at { font-size: 11px; color: #555; }
+
+.agent-analysis { margin-bottom: 16px; line-height: 1.6; }
+.agent-md-h2 { color: #e5e5e5; font-size: 16px; margin: 12px 0 8px; }
+.agent-md-h3 { color: #ccc; font-size: 14px; margin: 10px 0 6px; }
+.agent-md-p { color: #aaa; font-size: 13px; margin: 4px 0; }
+.agent-md-li { color: #aaa; font-size: 13px; padding-left: 12px; margin: 2px 0; }
+
+.agent-violations-box {
+  background: rgba(255,68,68,0.08);
+  border: 1px solid #ff4444;
+  border-radius: 6px;
+  padding: 14px;
+  margin-bottom: 16px;
+}
+.agent-violations-title {
+  color: #ff6666;
+  font-size: 14px;
+  margin: 0 0 10px;
+}
+.agent-violation-item {
+  color: #ffaaaa;
+  font-size: 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(255,68,68,0.15);
+}
+.agent-violation-item:last-child { border-bottom: none; }
+
+.agent-regulations {
+  background: rgba(77,166,255,0.05);
+  border: 1px solid #1e3a5c;
+  border-radius: 6px;
+  padding: 14px;
+  margin-bottom: 16px;
+}
+.agent-regulations h4 {
+  color: #4da6ff;
+  font-size: 14px;
+  margin: 0 0 10px;
+}
+.agent-regulation-item {
+  color: #88bbdd;
+  font-size: 12px;
+  padding: 4px 0;
+}
+
+.agent-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 40px 20px;
+  text-align: center;
+}
+.agent-error-icon { font-size: 32px; margin-bottom: 12px; }
+.agent-error p { color: #ff6666; font-size: 14px; }
+.agent-retry-btn {
+  margin-top: 16px;
+  padding: 8px 24px;
+  background: #1e1e1e;
+  border: 1px solid #333;
+  border-radius: 4px;
+  color: #aaa;
+  cursor: pointer;
+}
+
+.agent-history-divider {
+  height: 1px;
+  background: #1e2a3a;
+  margin: 16px 0;
+}
+.agent-history-title { color: #555; font-size: 12px; margin: 0 0 8px; }
+.agent-history-item {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 0;
+  font-size: 11px;
+  color: #666;
+  cursor: pointer;
+}
+.agent-history-item:hover { color: #aaa; }
+
+/* ---------- Animations ---------- */
+@keyframes pulse-glow {
+  0%, 100% { filter: drop-shadow(0 0 4px rgba(255,68,68,0.6)); }
+  50% { filter: drop-shadow(0 0 12px rgba(255,68,68,1)); }
+}
+
+@keyframes pulse-text {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ---------- Pulsing Red Marker (for DeckGL overlay) ---------- */
+.pulse-marker {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #ff4444;
+  box-shadow: 0 0 0 0 rgba(255,68,68,0.7);
+  animation: pulse-ring 1.5s infinite;
+}
+
+@keyframes pulse-ring {
+  0% { box-shadow: 0 0 0 0 rgba(255,68,68,0.7); }
+  70% { box-shadow: 0 0 0 12px rgba(255,68,68,0); }
+  100% { box-shadow: 0 0 0 0 rgba(255,68,68,0); }
+}
+
+/* ---------- Airspace Monitor Header Branding ---------- */
+.airspace-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: 'SF Mono', monospace;
+}
+.airspace-brand-icon {
+  font-size: 20px;
+  filter: drop-shadow(0 0 6px rgba(77,166,255,0.5));
+}
+.airspace-brand-text {
+  font-size: 14px;
+  font-weight: 700;
+  color: #4da6ff;
+  letter-spacing: 1px;
+}
+.airspace-brand-sub {
+  font-size: 10px;
+  color: #445;
+  letter-spacing: 0.5px;
+}
+
+/* ---------- Airspace Stats Bar ---------- */
+.airspace-stats-bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 16px;
+  background: #0a0e14;
+  border-bottom: 1px solid #1e1e1e;
+  overflow-x: auto;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.stats-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 4px 14px;
+  min-width: 70px;
+}
+.stats-label {
+  font-size: 9px;
+  color: #555;
+  letter-spacing: 1px;
+  font-weight: 600;
+}
+.stats-value {
+  font-size: 18px;
+  font-weight: 700;
+  color: #e5e5e5;
+  font-family: 'SF Mono', monospace;
+}
+.stats-divider {
+  width: 1px;
+  height: 28px;
+  background: #2a2a2a;
+  margin: 0 8px;
+  flex-shrink: 0;
+}
+.stats-class .stats-value { font-size: 14px; }
+.stats-class .stats-label { font-size: 8px; }
+
+/* ---------- Classification Panel ---------- */
+.classification-body {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 12px;
+}
+.cls-donut {
+  flex-shrink: 0;
+}
+.cls-table {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.cls-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.cls-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.cls-name {
+  color: #ccc;
+  flex: 1;
+}
+.cls-count {
+  color: #e5e5e5;
+  font-weight: 600;
+  font-family: 'SF Mono', monospace;
+}
+.cls-pct {
+  color: #777;
+  font-size: 11px;
+  font-family: 'SF Mono', monospace;
+  min-width: 42px;
+  text-align: right;
+}
+
+/* ---------- Trajectory Panel ---------- */
+.trajectory-body {
+  padding: 0;
+}
+.traj-item {
+  padding: 10px 12px;
+  border-bottom: 1px solid #1e1e1e;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.traj-item:hover { background: #1a1f2e; }
+.traj-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.traj-callsign {
+  font-weight: 600;
+  font-size: 13px;
+  color: #e5e5e5;
+}
+.traj-class {
+  font-size: 11px;
+  color: #888;
+}
+.traj-risk {
+  margin-left: auto;
+  font-weight: 700;
+  font-size: 13px;
+  font-family: 'SF Mono', monospace;
+}
+.traj-info {
+  display: flex;
+  gap: 12px;
+  font-size: 11px;
+  color: #666;
+  margin-bottom: 4px;
+}
+.traj-waypoints {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.traj-wp {
+  font-size: 10px;
+  color: #4da6ff;
+  font-family: 'SF Mono', monospace;
+  padding: 1px 0;
+}
+
+/* ---------- Anomaly Detection Panel ---------- */
+.anomaly-body { padding: 0; }
+.anomaly-item {
+  padding: 10px 12px;
+  border-bottom: 1px solid #1e1e1e;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.anomaly-item:hover { background: #1a1f2e; }
+.anomaly-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.anomaly-icon { font-size: 16px; }
+.anomaly-callsign {
+  font-weight: 600;
+  font-size: 13px;
+  color: #e5e5e5;
+}
+.anomaly-severity {
+  margin-left: auto;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 3px;
+}
+.anomaly-details {
+  display: flex;
+  gap: 12px;
+  font-size: 11px;
+  color: #888;
+  margin-bottom: 3px;
+}
+.anomaly-bar {
+  margin-top: 4px;
+  height: 3px;
+  background: #1a1a1a;
+  border-radius: 2px;
+  overflow: hidden;
+}
+.anomaly-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.5s ease;
+}
+
+/* ---------- Flight Detail Card Trajectory Section ---------- */
+.fdc-traj-section {
+  padding: 10px 14px;
+  border-bottom: 1px solid #1a1a1a;
+}
+.fdc-traj-title {
+  font-size: 11px;
+  color: #555;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+  letter-spacing: 0.5px;
+}
+.fdc-traj-point {
+  font-size: 11px;
+  color: #4da6ff;
+  font-family: 'SF Mono', monospace;
+  padding: 2px 0;
+}
+
+/* ---------- Agent Chat FAB ---------- */
+.agent-chat-fab {
+  position: fixed;
+  bottom: 28px;
+  right: 28px;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  border: none;
+  background: linear-gradient(135deg, #4da6ff, #0066cc);
+  color: #fff;
+  font-size: 26px;
+  cursor: pointer;
+  z-index: 1500;
+  box-shadow: 0 4px 16px rgba(77, 166, 255, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+.agent-chat-fab:hover {
+  transform: scale(1.1);
+  box-shadow: 0 6px 24px rgba(77, 166, 255, 0.5);
+}
+
+/* ---------- Agent Chat Input Area ---------- */
+.agent-chat-input-area {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid #1e2a3a;
+  background: #0d1117;
+}
+.agent-chat-input {
+  flex: 1;
+  background: #161b22;
+  border: 1px solid #1e2a3a;
+  border-radius: 6px;
+  padding: 10px 14px;
+  color: #e5e5e5;
+  font-size: 13px;
+  outline: none;
+}
+.agent-chat-input::placeholder { color: #555; }
+.agent-chat-input:focus { border-color: #4da6ff; }
+.agent-chat-send {
+  padding: 8px 16px;
+  background: #4da6ff;
+  border: none;
+  border-radius: 6px;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.agent-chat-send:hover { background: #3a8fdd; }
+
+/* ---------- Agent Chat Messages ---------- */
+.agent-chat-msg {
+  padding: 10px 14px;
+  border-radius: 8px;
+  margin-bottom: 10px;
+  font-size: 13px;
+  line-height: 1.5;
+  max-width: 85%;
+  word-wrap: break-word;
+}
+.agent-chat-msg-user {
+  background: rgba(77, 166, 255, 0.12);
+  border: 1px solid rgba(77, 166, 255, 0.25);
+  color: #b8d8f8;
+  margin-left: auto;
+  text-align: right;
+}
+.agent-chat-msg-agent {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid #1e2a3a;
+  color: #ccc;
+}
+.agent-chat-typing {
+  color: #4da6ff;
+  font-size: 12px;
+  padding: 8px 14px;
+  animation: pulse-glow 1.5s ease-in-out infinite;
+}
