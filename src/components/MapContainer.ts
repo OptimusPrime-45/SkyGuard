@@ -108,6 +108,7 @@ export class MapContainer {
   private cachedProtests: SocialUnrestEvent[] | null = null;
   private cachedFlightDelays: AirportDelayAlert[] | null = null;
   private cachedAircraftPositions: PositionSample[] | null = null;
+  private cachedRadarFlights: any[] | null = null;
   private cachedMilitaryFlights: MilitaryFlight[] | null = null;
   private cachedMilitaryFlightClusters: MilitaryFlightCluster[] | null = null;
   private cachedMilitaryVessels: MilitaryVessel[] | null = null;
@@ -273,6 +274,7 @@ export class MapContainer {
     if (this.cachedProtests) this.setProtests(this.cachedProtests);
     if (this.cachedFlightDelays) this.setFlightDelays(this.cachedFlightDelays);
     if (this.cachedAircraftPositions) this.setAircraftPositions(this.cachedAircraftPositions);
+    if (this.cachedRadarFlights) this.setRadarFlights(this.cachedRadarFlights);
     if (this.cachedMilitaryFlights) this.setMilitaryFlights(this.cachedMilitaryFlights, this.cachedMilitaryFlightClusters ?? []);
     if (this.cachedMilitaryVessels) this.setMilitaryVessels(this.cachedMilitaryVessels, this.cachedMilitaryVesselClusters ?? []);
     if (this.cachedNaturalEvents) this.setNaturalEvents(this.cachedNaturalEvents);
@@ -474,6 +476,11 @@ export class MapContainer {
   }
 
   public setRadarFlights(flights: any[]): void {
+    this.cachedRadarFlights = flights;
+    if (this.useGlobe) {
+      (this.globeMap as any)?.setRadarFlights?.(flights);
+      return;
+    }
     if (this.useDeckGL) {
       (this.deckGLMap as any)?.setRadarFlights?.(flights);
     }
