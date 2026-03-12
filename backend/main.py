@@ -57,16 +57,25 @@ def get_distance_nm(lat1, lon1, lat2, lon2):
     return 2 * R * math.asin(math.sqrt(a))
 
 def get_trajectory(lat, lon, speed, heading, mins=3):
-    """Kinematic Trajectory Prediction (Dead Reckoning)."""
-    R = 3440.065
+    """Curved trajectory prediction: simulates gentle banking/turning."""
+    R = 3440.065  # Earth radius in NM
     points = []
     lat_r, lon_r, hdg_r = math.radians(lat), math.radians(lon), math.radians(heading)
+    # Simulate a gentle turn: heading changes slightly each minute (simulate wind, pilot input, etc)
+    # Turn rate: up to 3 deg/min (typical for commercial aircraft in cruise)
+    turn_rate_deg = 2.5  # degrees per minute, can randomize or use a function of speed/alt
+    # Randomize left/right turn for realism
+    turn_dir = 1 if (int(lat*1000 + lon*1000 + heading) % 2 == 0) else -1
     for m in range(1, mins + 1):
+        # Heading changes gradually
+        hdg_r += math.radians(turn_dir * turn_rate_deg)
         dist = speed * (m / 60.0)
         ang_dist = dist / R
         f_lat = math.asin(math.sin(lat_r)*math.cos(ang_dist) + math.cos(lat_r)*math.sin(ang_dist)*math.cos(hdg_r))
         f_lon = lon_r + math.atan2(math.sin(hdg_r)*math.sin(ang_dist)*math.cos(lat_r), math.cos(ang_dist)-math.sin(lat_r)*math.sin(f_lat))
         points.append({"min": m, "lat": round(math.degrees(f_lat), 6), "lon": round(math.degrees(f_lon), 6)})
+        # For next step, update lat/lon to new position
+        lat_r, lon_r = f_lat, f_lon
     return points
 
 def get_risk_score(alt, speed, dist, is_anom, is_drone):
@@ -90,31 +99,22 @@ class CopilotRequest(BaseModel):
 # --- 6. API ENDPOINTS ---
 
 @app.get("/api/radar/stream")
-async def get_radar(demo: bool = False):
-    """The main data firehose for the frontend."""
-    url = "https://opensky-network.org/api/states/all?lamin=5.0&lomin=65.0&lamax=38.0&lomax=98.0"
+async def get_radar():
+    """The main data firehose. Live sources only: adsb.lol → OpenSky."""
     processed = []
-    
-    # 1. Guaranteed Demo Injection
-    if demo:
-        # Rogue Drone Example
-        processed.append({
-            "flight_id": "d-drone", "callsign": "ROGUE_DRONE",
-            "lat": RESTRICTED_LAT + 0.02, "lon": RESTRICTED_LON + 0.02,
-            "alt": 450.0, "speed": 32.0, "hdg": 220.0,
-            "class": "Drone", "is_anomaly": True, "risk": 98,
-            "dist_nm": 1.2, "path": get_trajectory(RESTRICTED_LAT+0.02, RESTRICTED_LON+0.02, 32, 220)
-        })
-        # Emergency Plunge Example
-        processed.append({
-            "flight_id": "d-emg", "callsign": "EMG_PLUNGE",
-            "lat": 19.076, "lon": 72.877,
-            "alt": 12000.0, "speed": 430.0, "hdg": 180.0,
-            "class": "Commercial Plane", "is_anomaly": True, "risk": 82,
-            "dist_nm": 650.0, "path": get_trajectory(19.076, 72.877, 430, 180)
-        })
 
-    # 2. Real-time Data Processing
+    # --- Helper: run ML on physics and build a flight record ---
+    def process_aircraft(fid, callsign, lat, lon, alt_ft, speed_kts, hdg, vrate_fpm=0.0):
+        d_nm = get_distance_nm(lat, lon, RESTRICTED_LAT, RESTRICTED_LON)
+        return {
+            "flight_id": fid, "callsign": callsign,
+            "lat": lat, "lon": lon,
+            "alt": round(alt_ft, 1), "speed": round(speed_kts, 1), "hdg": round(hdg, 1),
+            "d_nm": round(d_nm, 2),
+            "_phys": {'altitude': alt_ft, 'velocity': speed_kts, 'heading': hdg, 'vertical_rate': vrate_fpm}
+        }
+
+    # 1. PRIMARY SOURCE: adsb.lol — GLOBAL coverage (free, no key)
     try:
         resp = requests.get(url, timeout=5)
         resp.raise_for_status()
@@ -199,17 +199,85 @@ async def get_radar(demo: bool = False):
                 "class": sf["cls"], "is_anomaly": is_anom, "risk": risk, "dist_nm": round(d_nm, 2),
                 "path": get_trajectory(jlat, jlon, sf["speed"], sf["hdg"])
             })
+        resp = requests.get(
+            "https://api.adsb.lol/v2/lat/0/lon/0/dist/25000",
+            timeout=12,
+            headers={"Accept": "application/json"}
+        )
+        if resp.status_code == 200:
+            aircraft = resp.json().get("ac", [])
+            for ac in aircraft:
+                lat = ac.get("lat"); lon = ac.get("lon")
+                alt = ac.get("alt_baro", ac.get("alt_geom"))
+                gs = ac.get("gs")
+                if lat is None or lon is None or alt is None or gs is None:
+                    continue
+                if isinstance(alt, str):  # "ground" case
+                    alt = 0
+                fid = ac.get("hex", "?")
+                cs = (ac.get("flight") or fid).strip()
+                hdg = ac.get("track", ac.get("mag_heading", 0.0)) or 0.0
+                vrate = (ac.get("baro_rate") or 0.0)
+                processed.append(process_aircraft(fid, cs, lat, lon, float(alt), float(gs), float(hdg), float(vrate)))
+            if processed:
+                print(f"✅ adsb.lol: {len(processed)} aircraft (global)")
+    except Exception as e:
+        print(f"⚠️ adsb.lol error: {e}")
+
+    # 2. SECONDARY SOURCE: OpenSky Network — GLOBAL (often rate-limited)
+    if len(processed) == 0:
+        try:
+            resp = requests.get("https://opensky-network.org/api/states/all", timeout=8)
+            states = resp.json().get('states', []) if resp.status_code == 200 else []
+            for s in states:
+                if None in [s[5], s[6], s[7], s[9], s[11]]:
+                    continue
+                alt_ft = s[7] * 3.28084
+                spd_kts = s[9] * 1.94384
+                hdg = s[10] or 0.0
+                vrate = s[11] * 196.85
+                processed.append(process_aircraft(
+                    s[0], (s[1] or "").strip() or "UNKNOWN",
+                    s[6], s[5], alt_ft, spd_kts, hdg, vrate
+                ))
+            if processed:
+                print(f"✅ OpenSky: {len(processed)} aircraft (global)")
+        except Exception as e:
+            print(f"⚠️ OpenSky error: {e}")
+
+    # 5. BATCH ML INFERENCE — vectorized for speed on thousands of flights
+    live_flights = [f for f in processed if "_phys" in f]
+    if live_flights:
+        import numpy as np
+        phys_list = [f["_phys"] for f in live_flights]
+        df = pd.DataFrame(phys_list)
+        scaled = scaler.transform(df)
+        cls_ids = classifier.predict(scaled)
+        anom_flags = anomaly_detector.predict(scaled)
+        class_names = ["Commercial Plane", "Drone", "Bird"]
+        for i, f in enumerate(live_flights):
+            cls_name = class_names[cls_ids[i]]
+            is_anom = bool(anom_flags[i] == -1 or cls_name != "Commercial Plane")
+            is_drone = cls_name == "Drone"
+            risk = get_risk_score(f["alt"], f["speed"], f["d_nm"], is_anom, is_drone)
+            f["class"] = cls_name
+            f["is_anomaly"] = is_anom
+            f["risk"] = risk
+            f["dist_nm"] = f.pop("d_nm")
+            # Generate trajectory for ALL flights (no filtering)
+            f["path"] = get_trajectory(f["lat"], f["lon"], f["speed"], f["hdg"])
+            del f["_phys"]
 
     return {
         "tracked": len(processed),
-        "alerts": sum(1 for f in processed if f["risk"] > 75),
+        "alerts": sum(1 for f in processed if f.get("risk", 0) > 75),
         "flights": processed
     }
 
 @app.get("/api/radar/stats")
 async def get_radar_stats():
     """Aggregated stats for the frontend stats bar."""
-    radar = await get_radar(demo=False)
+    radar = await get_radar()
     flights = radar["flights"]
     class_counts = {}
     total_risk = 0
@@ -231,15 +299,39 @@ async def get_radar_stats():
 
 @app.post("/api/agent/copilot")
 async def agent_copilot(data: CopilotRequest):
-    """Agentic AI utilizing Llama 3 via Groq."""
-    if not client: return {"report": "Intelligence Agent Offline."}
-    
-    prompt = f"""
-    [ROLE] Lead Airspace Security AI
-    [DATA] Callsign: {data.callsign}, Type: {data.classification}, Threat Score: {data.risk_score}/100, Dist: {data.dist_nm}NM.
-    [METRICS] Alt: {data.alt}ft, Speed: {data.speed}kts.
-    [TASK] Provide a 2-sentence tactical summary and a specific counter-measure recommendation.
-    """
+    """Agentic AI utilizing Llama 3 via Groq, with offline fallback."""
+    # Offline rule-based fallback
+    def local_assessment():
+        level = "CRITICAL" if data.risk_score > 85 else "HIGH" if data.risk_score > 70 else "ELEVATED" if data.risk_score > 50 else "LOW"
+        msg = f"[{level} THREAT] {data.callsign} ({data.classification}) at {data.alt:.0f}ft, {data.speed:.0f}kts, {data.dist_nm:.1f}NM from restricted zone. Risk: {data.risk_score}/100."
+        if data.risk_score > 85:
+            msg += " Recommend immediate interception and airspace lockdown."
+        elif data.risk_score > 70:
+            msg += " Recommend increased surveillance and ready alert fighters."
+        elif data.risk_score > 50:
+            msg += " Recommend continued monitoring and ATC advisory."
+        else:
+            msg += " No immediate action required. Continue standard tracking."
+        return msg
+
+    if not client:
+        return {"report": local_assessment() + "\n\n(Offline mode — Groq API key not configured)"}
+
+    prompt = (
+        f"You are an airspace security analyst assistant. "
+        f"Respond naturally in plain text — no markdown, no bold, no bullet points, no headers. "
+        f"Do not introduce yourself or repeat your role.\n\n"
+        f"Context about the aircraft the user is asking about:\n"
+        f"Callsign: {data.callsign}\n"
+        f"Type: {data.classification}\n"
+        f"Threat Score: {data.risk_score}/100\n"
+        f"Distance from restricted zone: {data.dist_nm} NM\n"
+        f"Altitude: {data.alt} ft\n"
+        f"Speed: {data.speed} kts\n\n"
+        f"Always end your response with this line exactly:\n"
+        f"Callsign: {data.callsign} | Type: {data.classification} | Risk: {data.risk_score}/100 | Alt: {data.alt}ft | Dist: {data.dist_nm}NM\n\n"
+        f"Answer whatever the user asks about this aircraft. If the query is general, give a brief situational assessment and a recommended action. Keep it conversational and concise."
+    )
     try:
         chat = client.chat.completions.create(messages=[{"role": "user", "content": prompt}], model="llama-3.1-8b-instant", temperature=0.1)
         return {"report": chat.choices[0].message.content.strip()}
@@ -249,6 +341,8 @@ async def agent_copilot(data: CopilotRequest):
     except Exception as e:
         print(f"Unexpected error: {e}")
         return {"report": "Error connecting to Agentic Brain."}
+    except Exception as e:
+        return {"report": local_assessment() + f"\n\n(Groq fallback — {e})"}
 
 if __name__ == "__main__":
     import uvicorn
