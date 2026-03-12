@@ -22,6 +22,11 @@ import {
   stopRadarStream,
   onRadarUpdate,
 } from "@/services/radar-stream";
+import {
+  startInterpolation,
+  stopInterpolation,
+  onInterpolatedUpdate,
+} from "@/services/radar-interpolator";
 
 export type { CountryBriefSignals } from "@/app/app-context";
 
@@ -33,6 +38,7 @@ export class App {
 
   private modules: { destroy(): void }[] = [];
   private unsubRadar: (() => void) | null = null;
+  private unsubInterpolator: (() => void) | null = null;
 
   constructor(containerId: string) {
     const el = document.getElementById(containerId);
@@ -159,12 +165,12 @@ export class App {
     this.eventHandlers.init();
     this.eventHandlers.setupUrlStateSync();
 
-    // Start radar stream — polls FastAPI /api/radar/stream every 10s
+    // Start radar stream — polls FastAPI /api/radar/stream recursively
+    // Panels receive raw snapshots (every ~10s); the map receives
+    // interpolated positions at ~60fps for smooth aircraft glide.
     this.unsubRadar = onRadarUpdate((flights) => {
       (this.state as any).radarFlights = flights;
-      if ((this.state.map as any)?.setRadarFlights) {
-        (this.state.map as any).setRadarFlights(flights);
-      }
+      // Panels get raw snapshots (they don't need 60fps)
       const hrPanel = this.state.panels["high-risk"];
       if (hrPanel && typeof (hrPanel as any).updateFlights === "function") {
         (hrPanel as any).updateFlights(flights);
@@ -195,6 +201,15 @@ export class App {
         statsBar.update(flights);
       }
     });
+
+    // Interpolated stream → map only (smooth 60fps dead-reckoned positions)
+    this.unsubInterpolator = onInterpolatedUpdate((interpolatedFlights) => {
+      if ((this.state.map as any)?.setRadarFlights) {
+        (this.state.map as any).setRadarFlights(interpolatedFlights);
+      }
+    });
+
+    startInterpolation();
     startRadarStream();
 
     // Wire flight click handlers — map click → FlightDetailCard
@@ -247,7 +262,9 @@ export class App {
   public destroy(): void {
     this.state.isDestroyed = true;
     stopRadarStream();
+    stopInterpolation();
     this.unsubRadar?.();
+    this.unsubInterpolator?.();
 
     // Destroy all modules in reverse order
     for (let i = this.modules.length - 1; i >= 0; i--) {
