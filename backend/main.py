@@ -1,5 +1,6 @@
 import os
 import math
+import json
 import joblib
 import pandas as pd
 import requests
@@ -38,8 +39,13 @@ try:
     classifier = joblib.load('models/classifier.joblib')
     anomaly_detector = joblib.load('models/anomaly_detector.joblib')
     print("✅ All Models Loaded (XGBoost + Isolation Forest)")
+except FileNotFoundError as e:
+    print(f"❌ Model file missing: {e}")
+except (OSError, ValueError) as e:
+    print(f"❌ Model load failed due to invalid or unreadable file: {e}")
 except Exception as e:
-    print(f"❌ Model Load Error: {e}")
+    # Final fallback: log the unexpected error so it is visible in backend logs.
+    print(f"Unexpected error: {e}")
 
 # --- 4. PHYSICS & RISK UTILITIES ---
 
@@ -135,26 +141,35 @@ async def get_radar():
     except Exception as e:
         print(f"⚠️ adsb.lol error: {e}")
 
-    # 2. SECONDARY SOURCE: OpenSky Network — GLOBAL (often rate-limited)
-    if len(processed) == 0:
-        try:
-            resp = requests.get("https://opensky-network.org/api/states/all", timeout=8)
-            states = resp.json().get('states', []) if resp.status_code == 200 else []
-            for s in states:
-                if None in [s[5], s[6], s[7], s[9], s[11]]:
-                    continue
-                alt_ft = s[7] * 3.28084
-                spd_kts = s[9] * 1.94384
-                hdg = s[10] or 0.0
-                vrate = s[11] * 196.85
-                processed.append(process_aircraft(
-                    s[0], (s[1] or "").strip() or "UNKNOWN",
-                    s[6], s[5], alt_ft, spd_kts, hdg, vrate
-                ))
-            if processed:
-                print(f"✅ OpenSky: {len(processed)} aircraft (global)")
-        except Exception as e:
-            print(f"⚠️ OpenSky error: {e}")
+    # 2. Real-time Data Processing
+    try:
+        resp = requests.get(url, timeout=5)
+        states = resp.json().get('states', []) if resp.status_code == 200 else []
+        for s in states:
+            if None in [s[5], s[6], s[7], s[9], s[11]]: continue
+            
+            # Physics match training units (ft, knots, fpm)
+            phys = {'altitude': s[7]*3.28, 'velocity': s[9]*1.94, 'heading': s[10] or 0.0, 'vertical_rate': s[11]*196.8}
+            
+            # AI Inference
+            features = pd.DataFrame([phys])
+            scaled = scaler.transform(features)
+            cls_name = ["Commercial Plane", "Drone", "Bird"][classifier.predict(scaled)[0]]
+            is_anom = bool(anomaly_detector.predict(scaled)[0] == -1 or cls_name != "Commercial Plane")
+            
+            # Scoring & Trajectory
+            d_nm = get_distance_nm(s[6], s[5], RESTRICTED_LAT, RESTRICTED_LON)
+            risk = get_risk_score(phys['altitude'], phys['velocity'], d_nm, is_anom, cls_name == "Drone")
+            
+            processed.append({
+                "flight_id": s[0], "callsign": s[1].strip() or "UKNOWN",
+                "lat": s[6], "lon": s[5], "alt": round(phys['altitude'], 1),
+                "speed": round(phys['velocity'], 1), "hdg": round(phys['heading'], 1),
+                "class": cls_name, "is_anomaly": is_anom, "risk": risk, "dist_nm": round(d_nm, 2),
+                "path": get_trajectory(s[6], s[5], phys['velocity'], phys['heading'])
+            })
+    except Exception as e:
+        print(f"⚠️ OpenSky API error: {e}")
 
     # 5. BATCH ML INFERENCE — vectorized for speed on thousands of flights
     live_flights = [f for f in processed if "_phys" in f]
@@ -246,8 +261,8 @@ async def agent_copilot(data: CopilotRequest):
     try:
         chat = client.chat.completions.create(messages=[{"role": "user", "content": prompt}], model="llama-3.1-8b-instant", temperature=0.1)
         return {"report": chat.choices[0].message.content.strip()}
-    except Exception as e:
-        return {"report": local_assessment() + f"\n\n(Groq fallback — {e})"}
+    except:
+        return {"report": "Error connecting to Agentic Brain."}
 
 if __name__ == "__main__":
     import uvicorn
