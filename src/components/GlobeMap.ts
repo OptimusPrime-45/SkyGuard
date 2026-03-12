@@ -33,7 +33,7 @@ import { showLayerWarning } from '@/utils/layer-warning';
 import type { FeatureCollection, Geometry } from 'geojson';
 import type { MapLayers, Hotspot, MilitaryFlight, MilitaryVessel, NaturalEvent, InternetOutage, CyberThreat, SocialUnrestEvent, UcdpGeoEvent, MilitaryBase, GammaIrradiator, Spaceport, EconomicCenter, StrategicWaterway, CriticalMineralProject, AIDataCenter, UnderseaCable, Pipeline, CableAdvisory, RepairShip, AisDisruptionEvent, AisDensityZone, AisDisruptionType } from '@/types';
 import type { Earthquake } from '@/services/earthquakes';
-import type { AirportDelayAlert } from '@/services/aviation';
+import type { AirportDelayAlert, PositionSample } from '@/services/aviation';
 import type { MapContainerState, MapView, TimeRange } from './MapContainer';
 import type { CountryClickPayload } from './DeckGLMap';
 import type { WeatherAlert } from '@/services/weather';
@@ -439,6 +439,8 @@ export class GlobeMap {
   private satBeamGroup: any = null;
   private tradeRouteSegments: TradeRouteSegment[] = [];
   private globePaths: GlobePath[] = [];
+  private aircraftPositions: FlightMarker[] = [];
+  private radarFlights: FlightMarker[] = [];
   private cableFaultIds = new Set<string>();
   private cableDegradedIds = new Set<string>();
   private ciiScoresMap: Map<string, { score: number; level: string }> = new Map();
@@ -887,6 +889,7 @@ export class GlobeMap {
         fighter: '#ff4444', bomber: '#ff8800', recon: '#44aaff',
         tanker: '#88ff44', transport: '#aaaaff', helicopter: '#ffff44',
         drone: '#ff44ff', maritime: '#44ffff',
+        civilian: '#facc15', radar: '#ffffff'
       };
       const color = typeColors[d.type] ?? '#cccccc';
       el.innerHTML = GlobeMap.wrapHit(`
@@ -1472,6 +1475,12 @@ export class GlobeMap {
       markers.push(...this.flights);
       markers.push(...this.vessels);
     }
+    if (this.layers.flights) {
+      markers.push(...this.aircraftPositions);
+      markers.push(...this.radarFlights);
+      markers.push(...this.flightDelayMarkers);
+      markers.push(...this.notamRingMarkers);
+    }
     if (this.layers.weather) markers.push(...this.weatherMarkers);
     if (this.layers.natural) {
       markers.push(...this.naturalMarkers);
@@ -1481,10 +1490,6 @@ export class GlobeMap {
     if (this.layers.datacenters) markers.push(...this.datacenterMarkers);
     if (this.layers.waterways) markers.push(...this.waterwayMarkers);
     if (this.layers.minerals) markers.push(...this.mineralMarkers);
-    if (this.layers.flights) {
-      markers.push(...this.flightDelayMarkers);
-      markers.push(...this.notamRingMarkers);
-    }
     if (this.layers.ais) markers.push(...this.aisMarkers);
     if (this.layers.iranAttacks) markers.push(...this.iranMarkers);
     if (this.layers.outages) markers.push(...this.outageMarkers);
@@ -1758,6 +1763,32 @@ export class GlobeMap {
       callsign: f.callsign ?? '',
       type: (f as any).aircraftType ?? (f as any).type ?? 'fighter',
       heading: (f as any).heading ?? 0,
+    }));
+    this.flushMarkers();
+  }
+
+  public setAircraftPositions(positions: PositionSample[]): void {
+    this.aircraftPositions = positions.map(p => ({
+      _kind: 'flight' as const,
+      _lat: p.lat,
+      _lng: p.lon,
+      id: p.callsign || String(p.observedAt.getTime()),
+      callsign: p.callsign ?? '',
+      type: 'civilian', // Custom type to distinguish from military/radar if needed
+      heading: p.trackDeg ?? 0,
+    }));
+    this.flushMarkers();
+  }
+
+  public setRadarFlights(flights: any[]): void {
+    this.radarFlights = flights.map(f => ({
+      _kind: 'flight' as const,
+      _lat: f.lat,
+      _lng: f.lon,
+      id: f.id ?? f.callsign ?? String(Math.random()),
+      callsign: f.callsign ?? '',
+      type: 'radar',
+      heading: f.heading ?? 0, // Using heading if available, otherwise 0
     }));
     this.flushMarkers();
   }
