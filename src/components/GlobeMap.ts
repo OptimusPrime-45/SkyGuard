@@ -10,7 +10,7 @@
  *  - Night sky background: /textures/night-sky.png
  *  - Specular/water map: /textures/earth-water.png
  *  - Atmosphere: #4466cc glow via built-in Fresnel shader
- *  - All markers via htmlElementsData (single merged array with _kind discriminator)
+ *  - Markers use a hybrid WebGL point/ring pipeline, with labels on hover
  *  - Auto-rotate after 60 s of inactivity
  */
 
@@ -68,6 +68,13 @@ interface HotspotMarker extends BaseMarker {
   id: string;
   name: string;
   escalationScore: number;
+}
+interface ClusterMarker extends BaseMarker {
+  _kind: 'cluster';
+  id: string;
+  count: number;
+  summary: string;
+  clusterType: 'flight' | 'event' | 'mixed';
 }
 interface FlightMarker extends BaseMarker {
   _kind: 'flight';
@@ -316,15 +323,34 @@ interface GlobePath {
   id: string;
   name: string;
   points: number[][];
-  pathType: 'cable' | 'oil' | 'gas' | 'products' | 'orbit' | 'stormTrack' | 'stormHistory';
+  pathType: 'cable' | 'oil' | 'gas' | 'products' | 'orbit' | 'stormTrack' | 'stormHistory' | 'flightTrail' | 'flightArrow';
   status: string;
   country?: string;
   windKt?: number;
 }
+interface DisplacementArc {
+  id: string;
+  arcType: 'displacement';
+  sourcePosition: [number, number];
+  targetPosition: [number, number];
+  routeName: string;
+  volumeDesc: string;
+  status: 'stable' | 'high_risk';
+  refugees: number;
+}
+interface GlobeRingDatum {
+  id: string;
+  _lat: number;
+  _lng: number;
+  color: string | [string, string];
+  maxRadius: number;
+  propagationSpeed: number;
+  repeatPeriod: number;
+}
 interface GlobePolygon {
   coords: number[][][];
   name: string;
-  _kind: 'cii' | 'conflict' | 'imageryFootprint' | 'forecastCone';
+  _kind: 'cii' | 'conflict' | 'imageryFootprint' | 'forecastCone' | 'heatZone';
   level?: string;
   score?: number;
 
@@ -337,9 +363,13 @@ interface GlobePolygon {
   resolutionM?: number;
   mode?: string;
   previewUrl?: string;
+
+  color?: string;
+  strokeColor?: string;
+  altitude?: number;
 }
 type GlobeMarker =
-  | ConflictMarker | HotspotMarker | FlightMarker | VesselMarker
+  | ConflictMarker | HotspotMarker | ClusterMarker | FlightMarker | VesselMarker
   | WeatherMarker | NaturalMarker | IranMarker | OutageMarker
   | CyberMarker | FireMarker | ProtestMarker
   | UcdpMarker | DisplacementMarker | ClimateMarker | GpsJamMarker | TechMarker
@@ -438,7 +468,10 @@ export class GlobeMap {
   private controlsEndHandler: (() => void) | null = null;
   private satBeamGroup: any = null;
   private tradeRouteSegments: TradeRouteSegment[] = [];
+  private displacementArcs: DisplacementArc[] = [];
   private globePaths: GlobePath[] = [];
+  private flightTrailPaths: GlobePath[] = [];
+  private flightHeadingPaths: GlobePath[] = [];
   private aircraftPositions: FlightMarker[] = [];
   private radarFlights: FlightMarker[] = [];
   private cableFaultIds = new Set<string>();
@@ -637,41 +670,63 @@ export class GlobeMap {
 
     this.container.addEventListener('contextmenu', this.handleContextMenu);
 
-    // Wire HTML marker layer
-    globe
+    // Use WebGL-native points/rings for the main data channels.
+    const globeAny = globe as any;
+    globeAny
       .htmlElementsData([])
       .htmlLat((d: object) => (d as GlobeMarker)._lat)
       .htmlLng((d: object) => (d as GlobeMarker)._lng)
-      .htmlAltitude((d: object) => {
-        const m = d as GlobeMarker;
-        if (m._kind === 'satFootprint') return 0;
-        if (m._kind === 'satellite') return (m as SatelliteMarker).alt / 6371;
-        if (m._kind === 'flight' || m._kind === 'vessel') return 0.012;
-        if (m._kind === 'hotspot') return 0.005;
-        return 0.003;
-      })
-      .htmlElement((d: object) => this.buildMarkerElement(d as GlobeMarker));
+      .htmlAltitude(() => 0)
+      .htmlElement((d: object) => this.buildMarkerElement(d as GlobeMarker))
+      .pointsData([])
+      .pointLat((d: GlobeMarker) => d._lat)
+      .pointLng((d: GlobeMarker) => d._lng)
+      .pointAltitude((d: GlobeMarker) => this.getMarkerAltitude(d))
+      .pointRadius((d: GlobeMarker) => this.getMarkerRadius(d))
+      .pointColor((d: GlobeMarker) => this.getMarkerColor(d))
+      .pointLabel((d: GlobeMarker) => this.buildPointLabel(d));
+
+    globeAny.pointsMerge?.(true);
+    globeAny.pointResolution?.(10);
+    globeAny.pointCapCurvatureResolution?.(6);
+    globeAny.ringsData([])
+      .ringLat((d: GlobeRingDatum) => d._lat)
+      .ringLng((d: GlobeRingDatum) => d._lng)
+      .ringColor((d: GlobeRingDatum) => d.color)
+      .ringMaxRadius((d: GlobeRingDatum) => d.maxRadius)
+      .ringPropagationSpeed((d: GlobeRingDatum) => d.propagationSpeed)
+      .ringRepeatPeriod((d: GlobeRingDatum) => d.repeatPeriod);
+
+    globeAny.onPointClick?.((d: GlobeMarker) => {
+      this.handlePointSelection(d);
+    });
 
     // Arc accessors — set once, only data changes on flush
 
-    (globe as any)
-      .arcStartLat((d: TradeRouteSegment) => d.sourcePosition[1])
-      .arcStartLng((d: TradeRouteSegment) => d.sourcePosition[0])
-      .arcEndLat((d: TradeRouteSegment) => d.targetPosition[1])
-      .arcEndLng((d: TradeRouteSegment) => d.targetPosition[0])
-      .arcColor((d: TradeRouteSegment) => {
-        if (d.status === 'disrupted') return ['rgba(255,32,32,0.1)', 'rgba(255,32,32,0.8)', 'rgba(255,32,32,0.1)'];
-        if (d.status === 'high_risk') return ['rgba(255,180,0,0.1)', 'rgba(255,180,0,0.7)', 'rgba(255,180,0,0.1)'];
-        if (d.category === 'energy')    return ['rgba(255,140,0,0.05)', 'rgba(255,140,0,0.6)', 'rgba(255,140,0,0.05)'];
-        if (d.category === 'container') return ['rgba(68,136,255,0.05)', 'rgba(68,136,255,0.6)', 'rgba(68,136,255,0.05)'];
+    globeAny
+      .arcStartLat((d: TradeRouteSegment | DisplacementArc) => d.sourcePosition[1])
+      .arcStartLng((d: TradeRouteSegment | DisplacementArc) => d.sourcePosition[0])
+      .arcEndLat((d: TradeRouteSegment | DisplacementArc) => d.targetPosition[1])
+      .arcEndLng((d: TradeRouteSegment | DisplacementArc) => d.targetPosition[0])
+      .arcColor((d: TradeRouteSegment | DisplacementArc) => {
+        if ('arcType' in d && d.arcType === 'displacement') {
+          return d.refugees > 500000
+            ? ['rgba(120,190,255,0.05)', 'rgba(120,190,255,0.9)', 'rgba(120,190,255,0.05)']
+            : ['rgba(80,150,255,0.05)', 'rgba(80,150,255,0.65)', 'rgba(80,150,255,0.05)'];
+        }
+        const trade = d as TradeRouteSegment;
+        if (trade.status === 'disrupted') return ['rgba(255,32,32,0.1)', 'rgba(255,32,32,0.8)', 'rgba(255,32,32,0.1)'];
+        if (trade.status === 'high_risk') return ['rgba(255,180,0,0.1)', 'rgba(255,180,0,0.7)', 'rgba(255,180,0,0.1)'];
+        if (trade.category === 'energy')    return ['rgba(255,140,0,0.05)', 'rgba(255,140,0,0.6)', 'rgba(255,140,0,0.05)'];
+        if (trade.category === 'container') return ['rgba(68,136,255,0.05)', 'rgba(68,136,255,0.6)', 'rgba(68,136,255,0.05)'];
         return ['rgba(68,204,136,0.05)', 'rgba(68,204,136,0.6)', 'rgba(68,204,136,0.05)'];
       })
-      .arcAltitudeAutoScale(0.3)
-      .arcStroke(0.5)
+      .arcAltitudeAutoScale((d: TradeRouteSegment | DisplacementArc) => ('arcType' in d ? 0.45 : 0.3))
+      .arcStroke((d: TradeRouteSegment | DisplacementArc) => ('arcType' in d ? 0.7 : 0.5))
       .arcDashLength(0.9)
       .arcDashGap(4)
-      .arcDashAnimateTime(5000)
-      .arcLabel((d: TradeRouteSegment) => `${d.routeName} · ${d.volumeDesc}`);
+      .arcDashAnimateTime((d: TradeRouteSegment | DisplacementArc) => ('arcType' in d ? 2600 : 5000))
+      .arcLabel((d: TradeRouteSegment | DisplacementArc) => `${d.routeName} · ${d.volumeDesc}`);
 
     // Path accessors — set once
     (globe as any)
@@ -687,6 +742,8 @@ export class GlobeMap {
           const colors: Record<string, string> = { CN: 'rgba(255,32,32,0.4)', RU: 'rgba(255,136,0,0.4)', US: 'rgba(68,136,255,0.4)', EU: 'rgba(68,204,68,0.4)' };
           return colors[d.country || ''] || 'rgba(200,200,255,0.3)';
         }
+        if (d.pathType === 'flightArrow') return 'rgba(255,245,190,0.95)';
+        if (d.pathType === 'flightTrail') return 'rgba(125,235,255,0.75)';
         if (d.pathType === 'cable') {
           if (this.cableFaultIds.has(d.id))    return '#ff3030';
           if (this.cableDegradedIds.has(d.id)) return '#ff8800';
@@ -708,6 +765,8 @@ export class GlobeMap {
       .pathStroke((d: GlobePath) => {
         if (!d) return 0.6;
         if (d.pathType === 'orbit') return 0.3;
+        if (d.pathType === 'flightArrow') return 1.15;
+        if (d.pathType === 'flightTrail') return 0.75;
         if (d.pathType === 'cable') return 0.3;
         if (d.pathType === 'stormTrack' || d.pathType === 'stormHistory') return 1.2;
         return 0.6;
@@ -715,6 +774,8 @@ export class GlobeMap {
       .pathDashLength((d: GlobePath) => {
         if (!d) return 0.6;
         if (d.pathType === 'orbit') return 0.4;
+        if (d.pathType === 'flightArrow') return 1;
+        if (d.pathType === 'flightTrail') return 0.55;
         if (d.pathType === 'cable') return 1;
         if (d.pathType === 'stormTrack') return 0.8;
         if (d.pathType === 'stormHistory') return 1;
@@ -723,6 +784,8 @@ export class GlobeMap {
       .pathDashGap((d: GlobePath) => {
         if (!d) return 0.25;
         if (d.pathType === 'orbit') return 0.15;
+        if (d.pathType === 'flightArrow') return 0;
+        if (d.pathType === 'flightTrail') return 0.2;
         if (d.pathType === 'cable') return 0;
         if (d.pathType === 'stormTrack') return 0.4;
         if (d.pathType === 'stormHistory') return 0;
@@ -731,6 +794,8 @@ export class GlobeMap {
       .pathDashAnimateTime((d: GlobePath) => {
         if (!d) return 5000;
         if (d.pathType === 'orbit') return 0;
+        if (d.pathType === 'flightArrow') return 0;
+        if (d.pathType === 'flightTrail') return 1800;
         if (d.pathType === 'cable') return 0;
         if (d.pathType === 'stormTrack') return 3000;
         if (d.pathType === 'stormHistory') return 0;
@@ -746,6 +811,7 @@ export class GlobeMap {
         if (d._kind === 'conflict') return GlobeMap.CONFLICT_CAP[d.intensity!] ?? GlobeMap.CONFLICT_CAP.low;
         if (d._kind === 'imageryFootprint') return 'rgba(0,0,0,0)';
         if (d._kind === 'forecastCone') return 'rgba(255,140,60,0.2)';
+        if (d._kind === 'heatZone') return d.color ?? 'rgba(255,120,60,0.12)';
         return 'rgba(255,60,60,0.15)';
       })
       .polygonSideColor((d: GlobePolygon) => {
@@ -753,6 +819,7 @@ export class GlobeMap {
         if (d._kind === 'conflict') return GlobeMap.CONFLICT_SIDE[d.intensity!] ?? GlobeMap.CONFLICT_SIDE.low;
         if (d._kind === 'imageryFootprint') return 'rgba(0,0,0,0)';
         if (d._kind === 'forecastCone') return 'rgba(255,140,60,0.1)';
+        if (d._kind === 'heatZone') return 'rgba(0,0,0,0)';
         return 'rgba(255,60,60,0.08)';
       })
       .polygonStrokeColor((d: GlobePolygon) => {
@@ -760,11 +827,13 @@ export class GlobeMap {
         if (d._kind === 'conflict') return GlobeMap.CONFLICT_STROKE[d.intensity!] ?? GlobeMap.CONFLICT_STROKE.low;
         if (d._kind === 'imageryFootprint') return '#00b4ff';
         if (d._kind === 'forecastCone') return 'rgba(255,140,60,0.5)';
+        if (d._kind === 'heatZone') return d.strokeColor ?? 'rgba(255,180,120,0.22)';
         return '#ff4444';
       })
       .polygonAltitude((d: GlobePolygon) => {
         if (d._kind === 'cii') return 0.002;
         if (d._kind === 'conflict') return GlobeMap.CONFLICT_ALT[d.intensity!] ?? GlobeMap.CONFLICT_ALT.low;
+        if (d._kind === 'heatZone') return d.altitude ?? 0.0015;
         return 0.005;
       })
       .polygonLabel((d: GlobePolygon) => {
@@ -789,6 +858,9 @@ export class GlobeMap {
             label += `<br><img src="${safeHref}" referrerpolicy="no-referrer" style="max-width:180px;max-height:120px;margin-top:4px;border-radius:4px;" class="imagery-preview">`;
           }
           return label;
+        }
+        if (d._kind === 'heatZone') {
+          return `<b>${escapeHtml(d.name)}</b><br/>Density zone`;
         }
         return escapeHtml(d.name);
       });
@@ -1332,6 +1404,443 @@ export class GlobeMap {
     this.tooltipEl = null;
   }
 
+  private handlePointSelection(d: GlobeMarker): void {
+    if (d._kind === 'hotspot' && this.onHotspotClickCb) {
+      this.onHotspotClickCb({
+        id: d.id,
+        name: d.name,
+        lat: d._lat,
+        lon: d._lng,
+        keywords: [],
+        escalationScore: d.escalationScore as Hotspot['escalationScore'],
+      });
+      return;
+    }
+
+    if (d._kind === 'cluster' && this.globe) {
+      const currentAltitude = this.globe.pointOfView()?.altitude ?? 1.4;
+      this.globe.pointOfView({ lat: d._lat, lng: d._lng, altitude: Math.max(0.28, currentAltitude * 0.52) }, 900);
+    }
+  }
+
+  private buildPointLabel(d: GlobeMarker): string {
+    const esc = escapeHtml;
+    switch (d._kind) {
+      case 'cluster':
+        return `<b>${d.count} signals</b><br/>${esc(d.summary)}`;
+      case 'hotspot':
+        return `<b>${esc(d.name)}</b><br/>Escalation ${d.escalationScore}/5`;
+      case 'flight':
+        return `<b>${esc(d.callsign || 'Flight')}</b><br/>${esc(d.type)}`;
+      case 'vessel':
+        return `<b>${esc(d.name)}</b><br/>${esc(d.type)}`;
+      case 'weather':
+        return `<b>${esc(d.severity)}</b><br/>${esc((d.headline || '').slice(0, 90))}`;
+      case 'natural':
+        return `<b>${esc((d.title || '').slice(0, 80))}</b><br/>${esc(d.category)}`;
+      case 'outage':
+        return `<b>${esc(d.country || 'Outage')}</b><br/>${esc(d.severity)} network disruption`;
+      case 'cyber':
+        return `<b>${esc(d.severity.toUpperCase())}</b><br/>${esc(d.type)} · ${esc(d.indicator.slice(0, 40))}`;
+      case 'fire':
+        return `<b>Wildfire</b><br/>${esc(d.region)} · ${d.brightness.toFixed(0)} K`;
+      case 'protest':
+        return `<b>${esc(d.eventType)}</b><br/>${esc((d.title || '').slice(0, 70))}`;
+      case 'ucdp':
+        return `<b>${esc(d.country)}</b><br/>${esc(d.sideA)} vs ${esc(d.sideB)}`;
+      case 'displacement':
+        return `<b>Displacement Flow</b><br/>${esc(d.origin)} → ${esc(d.asylum)}<br/>${d.refugees.toLocaleString()} refugees`;
+      case 'climate':
+        return `<b>${esc(d.zone)}</b><br/>${esc(d.type)} anomaly · ${d.tempDelta > 0 ? '+' : ''}${d.tempDelta.toFixed(1)}°C`;
+      case 'gpsjam':
+        return `<b>GPS Jamming</b><br/>${esc(d.level)} · NP ${d.npAvg.toFixed(2)}`;
+      case 'conflictZone':
+        return `<b>${esc(d.name)}</b><br/>${esc(d.intensity)} intensity`;
+      case 'milbase':
+        return `<b>${esc(d.name)}</b><br/>${esc(d.type)} · ${esc(d.country)}`;
+      case 'nuclearSite':
+        return `<b>${esc(d.name)}</b><br/>${esc(d.type)} · ${esc(d.status)}`;
+      case 'spaceport':
+        return `<b>${esc(d.name)}</b><br/>${esc(d.operator)} · ${esc(d.country)}`;
+      case 'earthquake':
+        return `<b>M${d.magnitude.toFixed(1)}</b><br/>${esc((d.place || '').slice(0, 90))}`;
+      case 'economic':
+        return `<b>${esc(d.name)}</b><br/>${esc(d.type)} · ${esc(d.country)}`;
+      case 'datacenter':
+        return `<b>${esc(d.name)}</b><br/>${esc(d.owner)} · ${esc(d.chipType)}`;
+      case 'waterway':
+        return `<b>${esc(d.name)}</b><br/>${esc((d.description || '').slice(0, 90))}`;
+      case 'mineral':
+        return `<b>${esc(d.mineral)}</b><br/>${esc(d.name)} · ${esc(d.country)}`;
+      case 'flightDelay':
+        return `<b>${esc(d.iata)} ${esc(d.severity.toUpperCase())}</b><br/>${esc(d.delayType.replace(/_/g, ' '))}`;
+      case 'cableAdvisory':
+        return `<b>${esc(d.title.slice(0, 60))}</b><br/>${esc(d.severity)} · ${esc(d.impact.slice(0, 80))}`;
+      case 'repairShip':
+        return `<b>${esc(d.name)}</b><br/>${esc(d.status)}${d.eta ? ` · ETA ${esc(d.eta)}` : ''}`;
+      case 'aisDisruption':
+        return `<b>${esc(d.name)}</b><br/>${esc(d.type)} · ${esc(d.severity)}`;
+      case 'newsLocation':
+        return `<b>${esc((d.title || '').slice(0, 80))}</b><br/>${esc(d.threatLevel)}`;
+      case 'satellite':
+        return `<b>${esc(d.name)}</b><br/>${esc(d.country)} · ${Math.round(d.alt)} km`;
+      case 'satFootprint':
+        return `<b>Footprint</b><br/>NORAD ${esc(d.noradId)}`;
+      case 'imageryScene':
+        return `<b>${esc(d.satellite)}</b><br/>${esc(d.datetime)}`;
+      case 'tech':
+        return `<b>${esc(d.title.slice(0, 60))}</b><br/>${esc(d.country)}`;
+      case 'iran':
+        return `<b>${esc(d.title.slice(0, 70))}</b><br/>${esc(d.category)} · ${esc(d.location)}`;
+      default:
+        return '';
+    }
+  }
+
+  private getMarkerColor(d: GlobeMarker): string {
+    switch (d._kind) {
+      case 'cluster': return d.clusterType === 'flight' ? '#66d8ff' : d.clusterType === 'event' ? '#ffb347' : '#d8c7ff';
+      case 'hotspot': return ['#88ff44', '#88ff44', '#ffdd00', '#ffaa00', '#ff6600', '#ff2020'][d.escalationScore] ?? '#ffaa00';
+      case 'flight': {
+        if (d.type === 'radar') return '#facc15';
+        if (d.type === 'civilian') return '#7dd3fc';
+        return '#fb7185';
+      }
+      case 'vessel': return '#38bdf8';
+      case 'weather': return d.severity === 'Extreme' ? '#ff0044' : d.severity === 'Severe' ? '#ff7a00' : '#7aa7ff';
+      case 'natural': return '#ff9966';
+      case 'iran': return getIranEventHexColor(d);
+      case 'outage': return d.severity === 'total' ? '#ff3030' : d.severity === 'major' ? '#ff8800' : '#ffdd55';
+      case 'cyber': return d.severity === 'critical' ? '#ff0044' : d.severity === 'high' ? '#ff6a00' : d.severity === 'medium' ? '#ffaa00' : '#5aa9ff';
+      case 'fire': return d.brightness > 400 ? '#ff3030' : d.brightness > 330 ? '#ff7a00' : '#ffb000';
+      case 'protest': return d.eventType === 'riot' ? '#ff3030' : d.eventType === 'strike' ? '#4cb6ff' : '#ffaa00';
+      case 'ucdp': return '#ff7a00';
+      case 'displacement': return '#8ec5ff';
+      case 'climate': return d.type === 'warm' ? '#ff6a00' : d.type === 'cold' ? '#4ca3ff' : d.type === 'wet' ? '#2dd4ff' : '#95ff95';
+      case 'gpsjam': return d.level === 'high' ? '#ff3030' : '#ff9a00';
+      case 'tech': return '#4cb6ff';
+      case 'conflictZone': return d.intensity === 'high' ? '#ff3030' : d.intensity === 'medium' ? '#ff9a00' : '#ffd447';
+      case 'milbase': return '#5aa9ff';
+      case 'nuclearSite': return d.status === 'active' ? '#ffd447' : '#ff9a00';
+      case 'irradiator': return '#ff9a00';
+      case 'spaceport': return '#7dd3fc';
+      case 'earthquake': return d.magnitude >= 6 ? '#ff3030' : d.magnitude >= 4 ? '#ff9a00' : '#ffd447';
+      case 'economic': return '#e9d36b';
+      case 'datacenter': return '#8da2fb';
+      case 'waterway': return '#38bdf8';
+      case 'mineral': return '#c084fc';
+      case 'flightDelay': return d.severity === 'severe' ? '#ff3030' : d.severity === 'major' ? '#ff7a00' : '#ffd447';
+      case 'notamRing': return '#ff3030';
+      case 'cableAdvisory': return d.severity === 'fault' ? '#ff3030' : '#ff9a00';
+      case 'repairShip': return d.status === 'on-station' ? '#44ff88' : '#5aa9ff';
+      case 'aisDisruption': return d.severity === 'high' ? '#ff3030' : d.severity === 'elevated' ? '#ff9a00' : '#5aa9ff';
+      case 'newsLocation': return d.threatLevel === 'critical' ? '#ff3030' : d.threatLevel === 'high' ? '#ff7a00' : d.threatLevel === 'elevated' ? '#ffd447' : '#7dd3fc';
+      case 'flash': return '#ffffff';
+      case 'satellite': return SAT_COUNTRY_COLORS[d.country] ?? '#ccccff';
+      case 'satFootprint': return SAT_COUNTRY_COLORS[d.country] ?? '#9ca3af';
+      case 'imageryScene': return '#00b4ff';
+      default: return '#d1d5db';
+    }
+  }
+
+  private getMarkerRadius(d: GlobeMarker): number {
+    switch (d._kind) {
+      case 'cluster': return Math.min(1.8, 0.38 + Math.log10(d.count + 1) * 0.42);
+      case 'satellite': return 0.16;
+      case 'satFootprint': return 0.11;
+      case 'flight': {
+        if (d.type === 'radar') return 0.15;
+        if (d.type === 'civilian') return 0.1;
+        return 0.14;
+      }
+      case 'earthquake': return Math.max(0.12, Math.min(0.42, d.magnitude * 0.05));
+      case 'fire': return Math.max(0.1, Math.min(0.26, (d.brightness - 250) / 420));
+      case 'flightDelay': return Math.max(0.12, Math.min(0.3, d.avgDelayMinutes / 180));
+      default: return 0.14;
+    }
+  }
+
+  private getMarkerAltitude(d: GlobeMarker): number {
+    switch (d._kind) {
+      case 'cluster': return 0.018;
+      case 'hotspot': return 0.014 + (d.escalationScore * 0.004);
+      case 'flight': {
+        if (d.type === 'radar') return 0.03;
+        if (d.type === 'civilian') return 0.018;
+        return 0.032;
+      }
+      case 'vessel': return 0.012;
+      case 'weather': return d.severity === 'Extreme' ? 0.034 : d.severity === 'Severe' ? 0.026 : 0.02;
+      case 'natural': return 0.024;
+      case 'iran': return 0.022;
+      case 'outage': return 0.018;
+      case 'cyber': return d.severity === 'critical' ? 0.03 : d.severity === 'high' ? 0.024 : 0.018;
+      case 'fire': return d.brightness > 400 ? 0.032 : d.brightness > 330 ? 0.024 : 0.018;
+      case 'protest': return 0.017;
+      case 'ucdp': return Math.min(0.03, 0.016 + Math.log10((d.deaths || 0) + 1) * 0.006);
+      case 'displacement': return Math.min(0.034, 0.018 + Math.log10(d.refugees + 1) * 0.0045);
+      case 'climate': return 0.02 + Math.min(0.01, Math.abs(d.tempDelta) * 0.002);
+      case 'gpsjam': return d.level === 'high' ? 0.03 : 0.022;
+      case 'tech': return 0.018;
+      case 'conflictZone': return d.intensity === 'high' ? 0.032 : d.intensity === 'medium' ? 0.024 : 0.018;
+      case 'milbase': return 0.018;
+      case 'nuclearSite': return 0.022;
+      case 'irradiator': return 0.02;
+      case 'spaceport': return 0.024;
+      case 'earthquake': return Math.min(0.04, 0.016 + d.magnitude * 0.004);
+      case 'economic': return 0.018;
+      case 'datacenter': return 0.019;
+      case 'waterway': return 0.015;
+      case 'mineral': return 0.018;
+      case 'flightDelay': return Math.min(0.03, 0.018 + d.avgDelayMinutes / 800);
+      case 'notamRing': return 0.005;
+      case 'cableAdvisory': return 0.016;
+      case 'repairShip': return 0.013;
+      case 'aisDisruption': return 0.017;
+      case 'newsLocation': return 0.016;
+      case 'flash': return 0.005;
+      case 'satellite': return 0.045;
+      case 'satFootprint': return 0.005;
+      case 'imageryScene': return 0.014;
+      default: return 0.014;
+    }
+  }
+
+  private getCurrentAltitude(): number {
+    return this.globe?.pointOfView()?.altitude ?? 1.8;
+  }
+
+  private shouldClusterMarker(marker: GlobeMarker): boolean {
+    return marker._kind === 'flight'
+      || marker._kind === 'weather'
+      || marker._kind === 'cyber'
+      || marker._kind === 'fire'
+      || marker._kind === 'protest'
+      || marker._kind === 'ucdp'
+      || marker._kind === 'newsLocation'
+      || marker._kind === 'aisDisruption'
+      || marker._kind === 'displacement'
+      || marker._kind === 'climate';
+  }
+
+  private getClusterBucketSize(altitude: number): number {
+    if (altitude >= 1.35) return 14;
+    if (altitude >= 0.95) return 9;
+    if (altitude >= 0.68) return 6;
+    return 0;
+  }
+
+  private buildRenderableMarkers(markers: GlobeMarker[]): GlobeMarker[] {
+    const altitude = this.getCurrentAltitude();
+    const bucketSize = this.getClusterBucketSize(altitude);
+    if (bucketSize <= 0) return markers;
+
+    const output: GlobeMarker[] = [];
+    const buckets = new Map<string, GlobeMarker[]>();
+    for (const marker of markers) {
+      if (!this.shouldClusterMarker(marker)) {
+        output.push(marker);
+        continue;
+      }
+      const key = `${Math.round(marker._lat / bucketSize)}:${Math.round(marker._lng / bucketSize)}`;
+      const bucket = buckets.get(key);
+      if (bucket) bucket.push(marker);
+      else buckets.set(key, [marker]);
+    }
+
+    for (const [key, bucket] of buckets) {
+      if (bucket.length === 1) {
+        output.push(bucket[0]!);
+        continue;
+      }
+      const lat = bucket.reduce((sum, marker) => sum + marker._lat, 0) / bucket.length;
+      const lng = bucket.reduce((sum, marker) => sum + marker._lng, 0) / bucket.length;
+      const kinds = new Set(bucket.map(marker => marker._kind));
+      const clusterType: ClusterMarker['clusterType'] = kinds.size === 1 && kinds.has('flight')
+        ? 'flight'
+        : kinds.size === 1
+          ? 'event'
+          : 'mixed';
+      const topKinds = Array.from(kinds).slice(0, 3).join(', ');
+      output.push({
+        _kind: 'cluster',
+        _lat: lat,
+        _lng: lng,
+        id: `cluster-${key}`,
+        count: bucket.length,
+        summary: `${bucket.length} items · ${topKinds}`,
+        clusterType,
+      });
+    }
+
+    return output;
+  }
+
+  private buildRingData(markers: GlobeMarker[]): GlobeRingDatum[] {
+    const rings: GlobeRingDatum[] = [];
+
+    for (const marker of markers) {
+      if (marker._kind === 'cluster' && marker.count >= 3) {
+        rings.push({
+          id: `cluster-ring-${marker.id}`,
+          _lat: marker._lat,
+          _lng: marker._lng,
+          color: this.getMarkerColor(marker),
+          maxRadius: Math.min(4.5, 1.6 + Math.log10(marker.count + 1) * 1.2),
+          propagationSpeed: 1.6,
+          repeatPeriod: 1400,
+        });
+      }
+    }
+
+    for (const marker of this.notamRingMarkers) {
+      rings.push({
+        id: `notam-${marker.name}`,
+        _lat: marker._lat,
+        _lng: marker._lng,
+        color: ['rgba(255,70,70,0.65)', 'rgba(255,70,70,0.08)'],
+        maxRadius: 5,
+        propagationSpeed: 1.2,
+        repeatPeriod: 1700,
+      });
+    }
+
+    for (const marker of this.flashMarkers) {
+      rings.push({
+        id: marker.id,
+        _lat: marker._lat,
+        _lng: marker._lng,
+        color: ['rgba(255,255,255,0.95)', 'rgba(255,255,255,0.08)'],
+        maxRadius: 6,
+        propagationSpeed: 2.6,
+        repeatPeriod: 900,
+      });
+    }
+
+    return rings;
+  }
+
+  private offsetLatLng(lat: number, lng: number, bearingDeg: number, distanceKm: number): [number, number] {
+    const bearing = bearingDeg * (Math.PI / 180);
+    const earthRadiusKm = 6371;
+    const angularDistance = distanceKm / earthRadiusKm;
+    const latRad = lat * (Math.PI / 180);
+    const lngRad = lng * (Math.PI / 180);
+
+    const outLat = Math.asin(
+      Math.sin(latRad) * Math.cos(angularDistance)
+      + Math.cos(latRad) * Math.sin(angularDistance) * Math.cos(bearing),
+    );
+
+    const outLng = lngRad + Math.atan2(
+      Math.sin(bearing) * Math.sin(angularDistance) * Math.cos(latRad),
+      Math.cos(angularDistance) - Math.sin(latRad) * Math.sin(outLat),
+    );
+
+    return [outLat * (180 / Math.PI), ((((outLng * (180 / Math.PI)) + 540) % 360) - 180)];
+  }
+
+  private rebuildFlightTrailPaths(): void {
+    const allFlights = [...this.flights, ...this.aircraftPositions, ...this.radarFlights];
+    this.flightTrailPaths = allFlights.slice(0, 500).map((flight) => {
+      const heading = Number.isFinite(flight.heading) ? flight.heading : 0;
+      const [startLat, startLng] = this.offsetLatLng(flight._lat, flight._lng, heading + 180, 55);
+      const [endLat, endLng] = this.offsetLatLng(flight._lat, flight._lng, heading, 75);
+      return {
+        id: `trail-${flight.id}`,
+        name: flight.callsign || 'Flight trail',
+        points: [[startLng, startLat, 0], [flight._lng, flight._lat, 0], [endLng, endLat, 0]],
+        pathType: 'flightTrail',
+        status: 'active',
+      };
+    });
+
+    this.flightHeadingPaths = allFlights.slice(0, 500).map((flight) => {
+      const heading = Number.isFinite(flight.heading) ? flight.heading : 0;
+      const [tipLat, tipLng] = this.offsetLatLng(flight._lat, flight._lng, heading, 34);
+      const [leftLat, leftLng] = this.offsetLatLng(flight._lat, flight._lng, heading + 150, 18);
+      const [rightLat, rightLng] = this.offsetLatLng(flight._lat, flight._lng, heading - 150, 18);
+      return {
+        id: `arrow-${flight.id}`,
+        name: flight.callsign || 'Flight heading',
+        points: [[leftLng, leftLat, 0], [tipLng, tipLat, 0], [rightLng, rightLat, 0]],
+        pathType: 'flightArrow',
+        status: 'active',
+      };
+    });
+  }
+
+  private buildCirclePolygon(lat: number, lng: number, radiusKm: number, steps = 24): number[][][] {
+    const ring: number[][] = [];
+    for (let i = 0; i <= steps; i++) {
+      const angle = (i / steps) * 360;
+      const [ringLat, ringLng] = this.offsetLatLng(lat, lng, angle, radiusKm);
+      ring.push([ringLng, ringLat]);
+    }
+    return [ring];
+  }
+
+  private buildHeatZonePolygons(): GlobePolygon[] {
+    const polys: GlobePolygon[] = [];
+
+    if (this.layers.weather) {
+      for (const marker of this.weatherMarkers.slice(0, 18)) {
+        const severe = marker.severity === 'Extreme' || marker.severity === 'Severe';
+        polys.push({
+          coords: this.buildCirclePolygon(marker._lat, marker._lng, severe ? 280 : 180),
+          name: `${marker.severity} weather zone`,
+          _kind: 'heatZone',
+          color: severe ? 'rgba(255,115,0,0.12)' : 'rgba(90,160,255,0.1)',
+          strokeColor: severe ? 'rgba(255,145,40,0.4)' : 'rgba(100,180,255,0.32)',
+          altitude: severe ? 0.004 : 0.003,
+        });
+      }
+    }
+
+    if (this.layers.fires) {
+      for (const marker of this.fireMarkers.slice(0, 20)) {
+        const intense = marker.brightness > 380;
+        polys.push({
+          coords: this.buildCirclePolygon(marker._lat, marker._lng, intense ? 120 : 70),
+          name: `Fire density zone · ${marker.region}`,
+          _kind: 'heatZone',
+          color: intense ? 'rgba(255,70,50,0.14)' : 'rgba(255,145,0,0.1)',
+          strokeColor: intense ? 'rgba(255,100,80,0.45)' : 'rgba(255,160,40,0.28)',
+          altitude: intense ? 0.0045 : 0.003,
+        });
+      }
+    }
+
+    if (this.layers.gpsJamming) {
+      for (const marker of this.gpsJamMarkers.slice(0, 18)) {
+        polys.push({
+          coords: this.buildCirclePolygon(marker._lat, marker._lng, marker.level === 'high' ? 220 : 130),
+          name: `GPS interference zone · ${marker.level}`,
+          _kind: 'heatZone',
+          color: marker.level === 'high' ? 'rgba(255,55,55,0.12)' : 'rgba(255,160,0,0.1)',
+          strokeColor: marker.level === 'high' ? 'rgba(255,90,90,0.42)' : 'rgba(255,185,60,0.3)',
+          altitude: 0.0035,
+        });
+      }
+    }
+
+    if (this.layers.climate) {
+      for (const marker of this.climateMarkers.slice(0, 16)) {
+        const warm = marker.type === 'warm' || marker.type === 'dry';
+        polys.push({
+          coords: this.buildCirclePolygon(marker._lat, marker._lng, 240),
+          name: `${marker.type} anomaly zone · ${marker.zone}`,
+          _kind: 'heatZone',
+          color: warm ? 'rgba(255,130,60,0.1)' : 'rgba(70,170,255,0.1)',
+          strokeColor: warm ? 'rgba(255,160,80,0.3)' : 'rgba(110,190,255,0.3)',
+          altitude: 0.0028,
+        });
+      }
+    }
+
+    return polys;
+  }
+
   // ─── Overlay UI: zoom controls & layer panel ─────────────────────────────
 
   private createControls(): void {
@@ -1511,17 +2020,24 @@ export class GlobeMap {
       markers.push(...this.repairShipMarkers);
     }
     markers.push(...this.newsLocationMarkers);
-    markers.push(...this.flashMarkers);
+
+    const renderableMarkers = this.buildRenderableMarkers(markers);
 
     try {
-      this.globe.htmlElementsData(markers);
+      const globeAny = this.globe as any;
+      globeAny.htmlElementsData([]);
+      globeAny.pointsData(renderableMarkers);
+      globeAny.ringsData(this.buildRingData(renderableMarkers));
     } catch (err) { if (import.meta.env.DEV) console.warn('[GlobeMap] flush error', err); }
   }
 
   private flushArcs(): void {
     if (!this.globe || !this.initialized || this.destroyed || this.webglLost) return;
     this.wakeGlobe();
-    const segments = this.layers.tradeRoutes ? this.tradeRouteSegments : [];
+    const segments: Array<TradeRouteSegment | DisplacementArc> = [
+      ...(this.layers.tradeRoutes ? this.tradeRouteSegments : []),
+      ...(this.layers.displacement ? this.displacementArcs : []),
+    ];
     (this.globe as any).arcsData(segments);
   }
 
@@ -1535,7 +2051,9 @@ export class GlobeMap {
       : this.globePaths.filter(p => p.pathType === 'cable' ? showCables : showPipelines);
     const orbitPaths = this.layers.satellites ? this.satelliteTrailPaths : [];
     const stormPaths = this.layers.natural ? this.stormTrackPaths : [];
-    (this.globe as any).pathsData([...paths, ...orbitPaths, ...stormPaths]);
+    const flightTrails = (this.layers.flights || this.layers.military) ? this.flightTrailPaths : [];
+    const flightArrows = (this.layers.flights || this.layers.military) ? this.flightHeadingPaths : [];
+    (this.globe as any).pathsData([...paths, ...orbitPaths, ...stormPaths, ...flightTrails, ...flightArrows]);
   }
 
   private static readonly CII_GLOBE_COLORS: Record<string, string> = {
@@ -1615,6 +2133,8 @@ export class GlobeMap {
     if (this.layers.natural) {
       polys.push(...this.stormConePolygons);
     }
+
+    polys.push(...this.buildHeatZonePolygons());
 
     (this.globe as any).polygonsData(polys);
   }
@@ -1764,7 +2284,9 @@ export class GlobeMap {
       type: (f as any).aircraftType ?? (f as any).type ?? 'fighter',
       heading: (f as any).heading ?? 0,
     }));
+    this.rebuildFlightTrailPaths();
     this.flushMarkers();
+    this.flushPaths();
   }
 
   public setAircraftPositions(positions: PositionSample[]): void {
@@ -1777,7 +2299,9 @@ export class GlobeMap {
       type: 'civilian', // Custom type to distinguish from military/radar if needed
       heading: p.trackDeg ?? 0,
     }));
+    this.rebuildFlightTrailPaths();
     this.flushMarkers();
+    this.flushPaths();
   }
 
   public setRadarFlights(flights: any[]): void {
@@ -1790,7 +2314,9 @@ export class GlobeMap {
       type: 'radar',
       heading: f.heading ?? 0, // Using heading if available, otherwise 0
     }));
+    this.rebuildFlightTrailPaths();
     this.flushMarkers();
+    this.flushPaths();
   }
 
   public setMilitaryVessels(vessels: MilitaryVessel[]): void {
@@ -1884,10 +2410,16 @@ export class GlobeMap {
     ['ciiChoropleth', { markers: false, arcs: false, paths: false, polygons: true }],
     ['tradeRoutes',   { markers: false, arcs: true,  paths: false, polygons: false }],
     ['pipelines',     { markers: false, arcs: false, paths: true,  polygons: false }],
+    ['flights',       { markers: true,  arcs: false, paths: true,  polygons: false }],
+    ['military',      { markers: true,  arcs: false, paths: true,  polygons: false }],
     ['conflicts',     { markers: true,  arcs: false, paths: false, polygons: true }],
     ['cables',        { markers: true,  arcs: false, paths: true,  polygons: false }],
     ['satellites',        { markers: true,  arcs: false, paths: true,  polygons: true }],
-
+    ['weather',           { markers: true,  arcs: false, paths: false, polygons: true }],
+    ['fires',             { markers: true,  arcs: false, paths: false, polygons: true }],
+    ['gpsJamming',        { markers: true,  arcs: false, paths: false, polygons: true }],
+    ['climate',           { markers: true,  arcs: false, paths: false, polygons: true }],
+    ['displacement',      { markers: true,  arcs: true,  paths: false, polygons: false }],
     ['natural',           { markers: true,  arcs: false, paths: true,  polygons: true }],
   ]);
 
@@ -2238,6 +2770,7 @@ export class GlobeMap {
       country: o.country ?? '',
     }));
     this.flushMarkers();
+    this.flushPolygons();
   }
   public setAisData(disruptions: AisDisruptionEvent[], _density: AisDensityZone[]): void {
     // AisDensityZone requires a heatmap layer — render disruption events only
@@ -2380,6 +2913,7 @@ export class GlobeMap {
       brightness: f.brightness ?? 330,
     }));
     this.flushMarkers();
+    this.flushPolygons();
   }
   public setUcdpEvents(events: UcdpGeoEvent[]): void {
     this.ucdpMarkers = (events ?? []).filter(e => e.latitude != null && e.longitude != null).map(e => ({
@@ -2406,7 +2940,21 @@ export class GlobeMap {
         asylum: f.asylumName ?? f.asylumCode,
         refugees: f.refugees ?? 0,
       }));
+    this.displacementArcs = (flows ?? [])
+      .filter(f => f.originLat != null && f.originLon != null && f.asylumLat != null && f.asylumLon != null)
+      .slice(0, 120)
+      .map(f => ({
+        id: `displacement-${f.originCode}-${f.asylumCode}`,
+        arcType: 'displacement' as const,
+        sourcePosition: [f.originLon!, f.originLat!],
+        targetPosition: [f.asylumLon!, f.asylumLat!],
+        routeName: `${f.originName ?? f.originCode} → ${f.asylumName ?? f.asylumCode}`,
+        volumeDesc: `${(f.refugees ?? 0).toLocaleString()} displaced`,
+        status: (f.refugees ?? 0) > 500000 ? 'high_risk' : 'stable',
+        refugees: f.refugees ?? 0,
+      }));
     this.flushMarkers();
+    this.flushArcs();
   }
   public setClimateAnomalies(anomalies: ClimateAnomaly[]): void {
     this.climateMarkers = (anomalies ?? []).filter(a => a.lat != null && a.lon != null).map(a => ({
@@ -2420,6 +2968,7 @@ export class GlobeMap {
       tempDelta: a.tempDelta ?? 0,
     }));
     this.flushMarkers();
+    this.flushPolygons();
   }
   public setGpsJamming(hexes: GpsJamHex[]): void {
     this.gpsJamMarkers = (hexes ?? []).filter(h => h.lat != null && h.lon != null).map(h => ({
@@ -2431,6 +2980,7 @@ export class GlobeMap {
       npAvg: h.npAvg ?? 0,
     }));
     this.flushMarkers();
+    this.flushPolygons();
   }
 
   private static latLngAltToVec3(lat: number, lng: number, alt: number, vec3Ctor: any): any {
@@ -2608,8 +3158,8 @@ export class GlobeMap {
 
       const oldMat = this.globe.globeMaterial();
       if (oldMat) {
-        const stdMat = new THREE.MeshStandardMaterial({
-          color: 0xffffff, roughness: 0.8, metalness: 0.1,
+        const stdMat = new THREE.MeshLambertMaterial({
+          color: 0xffffff,
           emissive: new THREE.Color(0x0a1f2e), emissiveIntensity: 0.3,
         });
         if ((oldMat as any).map) stdMat.map = (oldMat as any).map;
@@ -2620,21 +3170,21 @@ export class GlobeMap {
       this.cyanLight.position.set(-10, -10, -10);
       scene.add(this.cyanLight);
 
-      const outerGeo = new THREE.SphereGeometry(2.15, 24, 24);
+      const outerGeo = new THREE.SphereGeometry(2.15, 14, 14);
       const outerMat = new THREE.MeshBasicMaterial({
         color: 0x00d4ff, side: THREE.BackSide, transparent: true, opacity: 0.15,
       });
       this.outerGlow = new THREE.Mesh(outerGeo, outerMat);
       scene.add(this.outerGlow);
 
-      const innerGeo = new THREE.SphereGeometry(2.08, 24, 24);
+      const innerGeo = new THREE.SphereGeometry(2.08, 12, 12);
       const innerMat = new THREE.MeshBasicMaterial({
         color: 0x00a8cc, side: THREE.BackSide, transparent: true, opacity: 0.1,
       });
       this.innerGlow = new THREE.Mesh(innerGeo, innerMat);
       scene.add(this.innerGlow);
 
-      const starCount = 600;
+      const starCount = 220;
       const starPositions = new Float32Array(starCount * 3);
       const starColors = new Float32Array(starCount * 3);
       for (let i = 0; i < starCount; i++) {
@@ -2652,7 +3202,7 @@ export class GlobeMap {
       const starGeo = new THREE.BufferGeometry();
       starGeo.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
       starGeo.setAttribute('color', new THREE.BufferAttribute(starColors, 3));
-      const starMat = new THREE.PointsMaterial({ size: 0.1, vertexColors: true, transparent: true });
+      const starMat = new THREE.PointsMaterial({ size: 0.08, vertexColors: true, transparent: true, opacity: 0.82 });
       this.starField = new THREE.Points(starGeo, starMat);
       scene.add(this.starField);
 
@@ -2716,7 +3266,7 @@ export class GlobeMap {
     try {
       const desktop = isDesktopRuntime();
       const pr = desktop
-        ? Math.min(resolveGlobePixelRatio(scale ?? getGlobeRenderScale()), 1.25)
+        ? Math.min(resolveGlobePixelRatio(scale ?? getGlobeRenderScale()), 1.1)
         : resolveGlobePixelRatio(scale ?? getGlobeRenderScale());
       const renderer = this.globe.renderer();
       renderer.setPixelRatio(pr);
@@ -2741,6 +3291,8 @@ export class GlobeMap {
         if (!d) return 5000;
         if (d.pathType === 'orbit') return 0;
         if (d.pathType === 'cable') return 0;
+        if (d.pathType === 'flightArrow') return 0;
+        if (d.pathType === 'flightTrail') return 1800;
         return 5000;
       });
     }
@@ -2749,10 +3301,14 @@ export class GlobeMap {
       this.globe.atmosphereAltitude(0);
       if (this.outerGlow) this.outerGlow.visible = false;
       if (this.innerGlow) this.innerGlow.visible = false;
+      if (this.cyanLight) this.cyanLight.visible = false;
+      if (this.starField) this.starField.visible = false;
     } else {
       this.globe.atmosphereAltitude(0.18);
       if (this.outerGlow) this.outerGlow.visible = true;
       if (this.innerGlow) this.innerGlow.visible = true;
+      if (this.cyanLight) this.cyanLight.visible = true;
+      if (this.starField) this.starField.visible = true;
     }
 
     if (prevPulse !== this._pulseEnabled) {

@@ -33,6 +33,7 @@ export class App {
 
   private modules: { destroy(): void }[] = [];
   private unsubRadar: (() => void) | null = null;
+  private selectedFlightSyncHandler: ((event: Event) => void) | null = null;
 
   constructor(containerId: string) {
     const el = document.getElementById(containerId);
@@ -207,6 +208,16 @@ export class App {
       }
     };
 
+    this.selectedFlightSyncHandler = (event: Event) => {
+      const customEvent = event as CustomEvent<{ flightId: string | null }>;
+      const selectedId = customEvent.detail?.flightId ?? null;
+      document.querySelectorAll<HTMLElement>('.threat-item, .traj-item, .anomaly-item').forEach((el) => {
+        const fid = el.dataset.fid ?? null;
+        el.classList.toggle('selected', !!selectedId && fid === selectedId);
+      });
+    };
+    window.addEventListener('skyguard-flight-selected', this.selectedFlightSyncHandler as EventListener);
+
     // Map radar flight click
     if ((this.state.map as any)?.setOnRadarFlightClick) {
       (this.state.map as any).setOnRadarFlightClick(showFlightDetail);
@@ -248,6 +259,10 @@ export class App {
     this.state.isDestroyed = true;
     stopRadarStream();
     this.unsubRadar?.();
+    if (this.selectedFlightSyncHandler) {
+      window.removeEventListener('skyguard-flight-selected', this.selectedFlightSyncHandler as EventListener);
+      this.selectedFlightSyncHandler = null;
+    }
 
     // Destroy all modules in reverse order
     for (let i = this.modules.length - 1; i >= 0; i--) {

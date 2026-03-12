@@ -468,6 +468,10 @@ export class MapContainer {
 
   public setAircraftPositions(positions: PositionSample[]): void {
     this.cachedAircraftPositions = positions;
+    if (this.useGlobe) {
+      this.globeMap?.setAircraftPositions(positions);
+      return;
+    }
     if (this.useDeckGL) {
       this.deckGLMap?.setAircraftPositions(positions);
     } else {

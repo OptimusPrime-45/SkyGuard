@@ -82,6 +82,7 @@ export class ThreatCenterPanel extends Panel {
       "div",
       {
         className: `threat-item ${flight.is_anomaly ? "anomaly" : ""}`,
+        "data-fid": flight.flight_id,
         onclick: () => this._onFlightClick?.(flight),
       },
       h(
