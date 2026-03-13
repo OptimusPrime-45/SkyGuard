@@ -5115,9 +5115,20 @@ export class DeckGLMap {
     this.render();
   }
 
+  private _radarThrottleId: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * Accept interpolated flight positions.
+   * Called at ~60 fps by the dead-reckoning interpolator — throttled here
+   * to ~10 fps layer rebuilds which is visually smooth without GPU thrash.
+   */
   public setRadarFlights(flights: any[]): void {
     this.radarFlights = flights;
-    this.debouncedRebuildLayers();
+    if (this._radarThrottleId === null) {
+      this._radarThrottleId = setTimeout(() => {
+        this._radarThrottleId = null;
+        this.rafUpdateLayers();
+      }, 100);
+    }
   }
 
   public setOnRadarFlightClick(callback: (flight: any) => void): void {

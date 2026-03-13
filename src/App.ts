@@ -196,9 +196,7 @@ export class App {
       const flights = mergeWithSimulation(rawFlights);
       
       (this.state as any).radarFlights = flights;
-      if ((this.state.map as any)?.setRadarFlights) {
-        (this.state.map as any).setRadarFlights(flights);
-      }
+      // Panels get raw snapshots (they don't need 60fps)
       const hrPanel = this.state.panels["high-risk"];
       if (hrPanel && typeof (hrPanel as any).updateFlights === "function") {
         (hrPanel as any).updateFlights(flights);
@@ -236,6 +234,15 @@ export class App {
       (this as any)._latestRealRadarFlights = flights;
       processFlights(flights);
     });
+
+    // Interpolated stream → map only (smooth 60fps dead-reckoned positions)
+    this.unsubInterpolator = onInterpolatedUpdate((interpolatedFlights) => {
+      if ((this.state.map as any)?.setRadarFlights) {
+        (this.state.map as any).setRadarFlights(interpolatedFlights);
+      }
+    });
+
+    startInterpolation();
     startRadarStream();
 
     // Subscribe to simulation updates to refresh UI when simulation state changes
@@ -316,6 +323,7 @@ export class App {
   public destroy(): void {
     this.state.isDestroyed = true;
     stopRadarStream();
+    stopInterpolation();
     this.unsubRadar?.();
     if (this.selectedFlightSyncHandler) {
       window.removeEventListener('skyguard-flight-selected', this.selectedFlightSyncHandler as EventListener);

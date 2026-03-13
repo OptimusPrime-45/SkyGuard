@@ -154,49 +154,92 @@ async def get_radar():
     except Exception as e:
         print(f"Unexpected error: {e}")
 
-    # 2. Real-time Data Processing
-    try:
-        resp = requests.get(url, timeout=5)
-        resp.raise_for_status()
-        payload = resp.json()
-        if 'states' not in payload:
-            raise KeyError('states')
-        states = payload['states'] or []
-        for s in states:
-            if None in [s[5], s[6], s[7], s[9], s[11]]: continue
-            
-            # Physics match training units (ft, knots, fpm)
-            phys = {'altitude': s[7]*3.28, 'velocity': s[9]*1.94, 'heading': s[10] or 0.0, 'vertical_rate': s[11]*196.8}
-            
-            # AI Inference
-            features = pd.DataFrame([phys])
-            scaled = scaler.transform(features)
-            cls_name = ["Commercial Plane", "Drone", "Bird"][classifier.predict(scaled)[0]]
-            is_anom = bool(anomaly_detector.predict(scaled)[0] == -1 or cls_name != "Commercial Plane")
-            
-            # Scoring & Trajectory
-            d_nm = get_distance_nm(s[6], s[5], RESTRICTED_LAT, RESTRICTED_LON)
-            risk = get_risk_score(phys['altitude'], phys['velocity'], d_nm, is_anom, cls_name == "Drone")
-            
-            processed.append({
-                "flight_id": s[0], "callsign": s[1].strip() or "UKNOWN",
-                "lat": s[6], "lon": s[5], "alt": round(phys['altitude'], 1),
-                "speed": round(phys['velocity'], 1), "hdg": round(phys['heading'], 1),
-                "class": cls_name, "is_anomaly": is_anom, "risk": risk, "dist_nm": round(d_nm, 2),
-                "path": get_trajectory(s[6], s[5], phys['velocity'], phys['heading'])
-            })
-    except requests.exceptions.HTTPError:
-        print("API is down or Rate Limited!")
-    except json.JSONDecodeError:
-        print("The data sent by the API was corrupted/invalid JSON")
-    except KeyError:
-        print("The API response format changed - 'states' key missing")
-    except requests.exceptions.RequestException as e:
-        print(f"Network error while fetching OpenSky data: {e}")
-    except Exception as e:
-        print(f"Unexpected error: {e}")
+    # 2. FALLBACK SOURCE: OpenSky Network (regional)
+    if not processed:
+        try:
+            resp = requests.get(url, timeout=5)
+            resp.raise_for_status()
+            payload = resp.json()
+            if 'states' not in payload:
+                raise KeyError('states')
+            states = payload['states'] or []
+            for s in states:
+                if None in [s[5], s[6], s[7], s[9], s[11]]: continue
 
-    # 5. BATCH ML INFERENCE — vectorized for speed on thousands of flights
+                # Physics match training units (ft, knots, fpm)
+                phys = {'altitude': s[7]*3.28, 'velocity': s[9]*1.94, 'heading': s[10] or 0.0, 'vertical_rate': s[11]*196.8}
+
+                # AI Inference
+                features = pd.DataFrame([phys])
+                scaled = scaler.transform(features)
+                cls_name = ["Commercial Plane", "Drone", "Bird"][classifier.predict(scaled)[0]]
+                is_anom = bool(anomaly_detector.predict(scaled)[0] == -1 or cls_name != "Commercial Plane")
+
+                # Scoring & Trajectory
+                d_nm = get_distance_nm(s[6], s[5], RESTRICTED_LAT, RESTRICTED_LON)
+                risk = get_risk_score(phys['altitude'], phys['velocity'], d_nm, is_anom, cls_name == "Drone")
+
+                processed.append({
+                    "flight_id": s[0], "callsign": s[1].strip() or "UNKNOWN",
+                    "lat": s[6], "lon": s[5], "alt": round(phys['altitude'], 1),
+                    "speed": round(phys['velocity'], 1), "hdg": round(phys['heading'], 1),
+                    "class": cls_name, "is_anomaly": is_anom, "risk": risk, "dist_nm": round(d_nm, 2),
+                    "path": get_trajectory(s[6], s[5], phys['velocity'], phys['heading'])
+                })
+        except requests.exceptions.HTTPError:
+            print("API is down or Rate Limited!")
+        except json.JSONDecodeError:
+            print("The data sent by the API was corrupted/invalid JSON")
+        except KeyError:
+            print("The API response format changed - 'states' key missing")
+        except requests.exceptions.RequestException as e:
+            print(f"Network error while fetching OpenSky data: {e}")
+        except Exception as e:
+            print(f"Unexpected error: {e}")
+
+    # 3. Fallback: inject demo flights if real API returned nothing
+    if not processed:
+        processed.extend([
+            {"flight_id": "d-drone", "callsign": "ROGUE_DRONE",
+             "lat": RESTRICTED_LAT + 0.02, "lon": RESTRICTED_LON + 0.02,
+             "alt": 450.0, "speed": 32.0, "hdg": 220.0,
+             "class": "Drone", "is_anomaly": True, "risk": 98,
+             "dist_nm": 1.2, "path": get_trajectory(RESTRICTED_LAT+0.02, RESTRICTED_LON+0.02, 32, 220)},
+            {"flight_id": "d-emg", "callsign": "EMG_PLUNGE",
+             "lat": 19.076, "lon": 72.877,
+             "alt": 12000.0, "speed": 430.0, "hdg": 180.0,
+             "class": "Commercial Plane", "is_anomaly": True, "risk": 82,
+             "dist_nm": 650.0, "path": get_trajectory(19.076, 72.877, 430, 180)},
+        ])
+        # Additional simulated flights for rich visualization
+        import random, time
+        random.seed(int(time.time()) // 30)  # Changes every 30s for animation
+        sim_flights = [
+            {"callsign": "AI6732", "lat": 28.55, "lon": 77.10, "alt": 35000, "speed": 480, "hdg": 45, "cls": "Commercial Plane"},
+            {"callsign": "SG401",  "lat": 12.97, "lon": 77.59, "alt": 28000, "speed": 420, "hdg": 320, "cls": "Commercial Plane"},
+            {"callsign": "UK819",  "lat": 22.31, "lon": 73.17, "alt": 32000, "speed": 460, "hdg": 190, "cls": "Commercial Plane"},
+            {"callsign": "IX512",  "lat": 13.20, "lon": 80.17, "alt": 15000, "speed": 350, "hdg": 270, "cls": "Commercial Plane"},
+            {"callsign": "UAV_X1", "lat": 28.60, "lon": 77.25, "alt": 800, "speed": 45, "hdg": 135, "cls": "Drone"},
+            {"callsign": "BIRD_01","lat": 26.85, "lon": 75.80, "alt": 200, "speed": 18, "hdg": 90, "cls": "Bird"},
+            {"callsign": "QR571",  "lat": 25.26, "lon": 55.30, "alt": 38000, "speed": 510, "hdg": 85, "cls": "Commercial Plane"},
+            {"callsign": "EK408",  "lat": 15.38, "lon": 73.88, "alt": 29000, "speed": 440, "hdg": 340, "cls": "Commercial Plane"},
+        ]
+        for i, sf in enumerate(sim_flights):
+            jlat = sf["lat"] + random.uniform(-0.05, 0.05)
+            jlon = sf["lon"] + random.uniform(-0.05, 0.05)
+            d_nm = get_distance_nm(jlat, jlon, RESTRICTED_LAT, RESTRICTED_LON)
+            is_drone = sf["cls"] == "Drone"
+            is_anom = is_drone or sf["cls"] == "Bird"
+            risk = get_risk_score(sf["alt"], sf["speed"], d_nm, is_anom, is_drone)
+            processed.append({
+                "flight_id": f"sim-{i}", "callsign": sf["callsign"],
+                "lat": round(jlat, 6), "lon": round(jlon, 6),
+                "alt": float(sf["alt"]), "speed": float(sf["speed"]), "hdg": float(sf["hdg"]),
+                "class": sf["cls"], "is_anomaly": is_anom, "risk": risk, "dist_nm": round(d_nm, 2),
+                "path": get_trajectory(jlat, jlon, sf["speed"], sf["hdg"])
+            })
+
+    # 4. BATCH ML INFERENCE — vectorized for speed on thousands of flights
     live_flights = [f for f in processed if "_phys" in f]
     if live_flights:
         phys_list = [f["_phys"] for f in live_flights]

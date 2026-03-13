@@ -326,7 +326,7 @@ export async function fetchFlightStatus(flightNumber: string, date?: string, ori
 export async function fetchAircraftPositions(opts: { icao24?: string; callsign?: string; swLat?: number; swLon?: number; neLat?: number; neLon?: number }): Promise<PositionSample[]> {
   return breakerTrack.execute(async () => {
     const r = await client.trackAircraft({ icao24: opts.icao24 ?? '', callsign: opts.callsign ?? '', swLat: opts.swLat ?? 0, swLon: opts.swLon ?? 0, neLat: opts.neLat ?? 0, neLon: opts.neLon ?? 0 });
-    return r.positions.map(toDisplayPosition);
+    return (r.positions ?? []).map(toDisplayPosition);
   }, []);
 }
 

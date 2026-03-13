@@ -67,47 +67,81 @@ function normalizeFlight(raw: any): RadarFlight {
 
 export type RadarFlightCallback = (flights: RadarFlight[]) => void;
 
+import { ingestSnapshot } from './radar-interpolator';
+
 let _flights: RadarFlight[] = [];
 let _listeners: Set<RadarFlightCallback> = new Set();
-let _intervalId: ReturnType<typeof setInterval> | null = null;
+let _running = false;
+let _timeoutId: ReturnType<typeof setTimeout> | null = null;
 let _fetching = false;
 
-async function fetchRadarData(): Promise<void> {
+/** Nominal interval between polls (ms). */
+const POLL_INTERVAL_MS = 10_000;
+/** Back-off ceiling on repeated failures (ms). */
+const MAX_BACKOFF_MS = 30_000;
+let _consecutiveErrors = 0;
+
+/**
+ * Recursive polling — fetch → process → schedule next fetch.
+ * Unlike setInterval this guarantees:
+ *   • No overlapping requests (the next poll only starts AFTER the
+ *     current one resolves).
+ *   • Adaptive timing — on error we back off; on success we reset.
+ */
+async function poll(): Promise<void> {
+  if (!_running) return;
   if (_fetching) return;
   _fetching = true;
+
+  let nextDelay = POLL_INTERVAL_MS;
+
   try {
     const res = await fetch("/api/radar/stream");
-    if (!res.ok) return;
-    const data = await res.json();
-    const raw = Array.isArray(data) ? data : (data?.flights ?? []);
-    const flights: RadarFlight[] = raw.map(normalizeFlight);
-    _flights = flights;
-    for (const cb of _listeners) {
-      try {
-        cb(flights);
-      } catch {
-        /* listener error */
+    if (!res.ok) {
+      _consecutiveErrors++;
+      nextDelay = Math.min(POLL_INTERVAL_MS * (1 + _consecutiveErrors), MAX_BACKOFF_MS);
+    } else {
+      _consecutiveErrors = 0;
+      const data = await res.json();
+      const raw = Array.isArray(data) ? data : (data?.flights ?? []);
+      const flights: RadarFlight[] = raw.map(normalizeFlight);
+      _flights = flights;
+
+      // Feed the dead-reckoning interpolator with the fresh truth
+      ingestSnapshot(flights);
+
+      for (const cb of _listeners) {
+        try { cb(flights); } catch { /* listener error */ }
       }
     }
   } catch {
-    // Network error — keep last known state
+    // Network error — keep last known state, back off
+    _consecutiveErrors++;
+    nextDelay = Math.min(POLL_INTERVAL_MS * (1 + _consecutiveErrors), MAX_BACKOFF_MS);
   } finally {
     _fetching = false;
   }
+
+  // Schedule next poll recursively
+  if (_running) {
+    _timeoutId = setTimeout(() => void poll(), nextDelay);
+  }
 }
 
-/** Start polling radar data every 10s */
+/** Start polling radar data with recursive scheduling */
 export function startRadarStream(): void {
-  if (_intervalId) return;
-  void fetchRadarData();
-  _intervalId = setInterval(() => void fetchRadarData(), 10_000);
+  if (_running) return;
+  _running = true;
+  _consecutiveErrors = 0;
+  void poll();
 }
 
 /** Stop polling */
 export function stopRadarStream(): void {
-  if (_intervalId) {
-    clearInterval(_intervalId);
-    _intervalId = null;
+  _running = false;
+  if (_timeoutId !== null) {
+    clearTimeout(_timeoutId);
+    _timeoutId = null;
   }
 }
 
