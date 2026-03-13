@@ -353,6 +353,7 @@ export default defineConfig({
   },
   server: {
     port: 3000,
+    allowedHosts: ['unantagonizable-janeth-genteelly.ngrok-free.dev'],
     open: !isE2E,
     hmr: isE2E ? false : undefined,
     watch: {

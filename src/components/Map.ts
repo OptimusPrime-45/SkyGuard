@@ -3628,8 +3628,9 @@ export class MapComponent {
     this.render();
   }
 
-  public setWeatherAlerts(alerts: WeatherAlert[]): void {
+  public setWeatherAlerts(alerts: WeatherAlert[], status?: string): void {
     this.weatherAlerts = alerts;
+    (this as any).weatherStatus = status ?? null;
     this.render();
   }
 

@@ -23,10 +23,9 @@ import {
   onRadarUpdate,
 } from "@/services/radar-stream";
 import {
-  startInterpolation,
-  stopInterpolation,
-  onInterpolatedUpdate,
-} from "@/services/radar-interpolator";
+  mergeWithSimulation,
+  onSimulationUpdate,
+} from "@/services/simulation";
 
 export type { CountryBriefSignals } from "@/app/app-context";
 
@@ -38,7 +37,7 @@ export class App {
 
   private modules: { destroy(): void }[] = [];
   private unsubRadar: (() => void) | null = null;
-  private unsubInterpolator: (() => void) | null = null;
+  private selectedFlightSyncHandler: ((event: Event) => void) | null = null;
 
   constructor(containerId: string) {
     const el = document.getElementById(containerId);
@@ -129,7 +128,33 @@ export class App {
       loadAllData: () => Promise.resolve(),
       flushStaleRefreshes: () => {},
       setHiddenSince: () => {},
-      loadDataForLayer: () => {},
+      loadDataForLayer: (layer: string) => {
+        // Only implement weather loading here; other layers handled elsewhere
+        if (layer === 'weather') {
+          // Dynamically import the weather service to avoid circular deps at module load
+          void (async () => {
+            try {
+              // Indicate loading
+              try { (this.state.map as any)?.setLayerLoading?.('weather', true); } catch {}
+
+              const svc = await import('@/services/weather');
+              const alerts = await svc.fetchWeatherAlerts().catch(() => []);
+              const status = typeof svc.getWeatherStatus === 'function' ? svc.getWeatherStatus() : '';
+
+              // Set on the active map if available (pass status for UI)
+              try { (this.state.map as any)?.setWeatherAlerts(alerts, status); } catch (e) { /* swallow */ }
+
+              // Mark layer ready
+              try { (this.state.map as any)?.setLayerReady?.('weather', (alerts && alerts.length > 0) || false); } catch {}
+            } catch (e) {
+              console.warn('[App] Failed to load weather alerts', e);
+              try { (this.state.map as any)?.setLayerReady?.('weather', false); } catch {}
+            } finally {
+              try { (this.state.map as any)?.setLayerLoading?.('weather', false); } catch {}
+            }
+          })();
+        }
+      },
       waitForAisData: () => Promise.resolve(),
       syncDataFreshnessWithLayers: () => {},
       ensureCorrectZones: () => this.panelLayout.ensureCorrectZones(),
@@ -165,10 +190,11 @@ export class App {
     this.eventHandlers.init();
     this.eventHandlers.setupUrlStateSync();
 
-    // Start radar stream — polls FastAPI /api/radar/stream recursively
-    // Panels receive raw snapshots (every ~10s); the map receives
-    // interpolated positions at ~60fps for smooth aircraft glide.
-    this.unsubRadar = onRadarUpdate((flights) => {
+    // Helper to process flights through all panels
+    const processFlights = (rawFlights: import("@/services/radar-stream").RadarFlight[]) => {
+      // Merge with simulation if active
+      const flights = mergeWithSimulation(rawFlights);
+      
       (this.state as any).radarFlights = flights;
       // Panels get raw snapshots (they don't need 60fps)
       const hrPanel = this.state.panels["high-risk"];
@@ -200,6 +226,13 @@ export class App {
       if (statsBar && typeof statsBar.update === "function") {
         statsBar.update(flights);
       }
+    };
+
+    // Start radar stream — polls FastAPI /api/radar/stream every 10s
+    this.unsubRadar = onRadarUpdate((flights) => {
+      // Always keep the latest real (non-simulated) radar flights
+      (this as any)._latestRealRadarFlights = flights;
+      processFlights(flights);
     });
 
     // Interpolated stream → map only (smooth 60fps dead-reckoned positions)
@@ -212,6 +245,24 @@ export class App {
     startInterpolation();
     startRadarStream();
 
+    // Subscribe to simulation updates to refresh UI when simulation state changes
+    const statsBar = (this.state as any).statsBar;
+    if (statsBar && typeof statsBar.setOnSimulationToggle === "function") {
+      statsBar.setOnSimulationToggle(() => {
+        // Re-process latest real flights with new simulation state
+        const currentFlights =
+          (this as any)._latestRealRadarFlights ?? [];
+        processFlights(currentFlights);
+      });
+    }
+
+    // Also listen to simulation updates directly for real-time updates
+    onSimulationUpdate(() => {
+      const currentFlights =
+        (this as any)._latestRealRadarFlights ?? [];
+      processFlights(currentFlights);
+    });
+
     // Wire flight click handlers — map click → FlightDetailCard
     const flightDetailCard = (this.state as any).flightDetailCard;
     const agentPanel = (this.state as any).agentPanel;
@@ -221,6 +272,16 @@ export class App {
         flightDetailCard.show(flight);
       }
     };
+
+    this.selectedFlightSyncHandler = (event: Event) => {
+      const customEvent = event as CustomEvent<{ flightId: string | null }>;
+      const selectedId = customEvent.detail?.flightId ?? null;
+      document.querySelectorAll<HTMLElement>('.threat-item, .traj-item, .anomaly-item').forEach((el) => {
+        const fid = el.dataset.fid ?? null;
+        el.classList.toggle('selected', !!selectedId && fid === selectedId);
+      });
+    };
+    window.addEventListener('skyguard-flight-selected', this.selectedFlightSyncHandler as EventListener);
 
     // Map radar flight click
     if ((this.state.map as any)?.setOnRadarFlightClick) {
@@ -264,7 +325,10 @@ export class App {
     stopRadarStream();
     stopInterpolation();
     this.unsubRadar?.();
-    this.unsubInterpolator?.();
+    if (this.selectedFlightSyncHandler) {
+      window.removeEventListener('skyguard-flight-selected', this.selectedFlightSyncHandler as EventListener);
+      this.selectedFlightSyncHandler = null;
+    }
 
     // Destroy all modules in reverse order
     for (let i = this.modules.length - 1; i >= 0; i--) {

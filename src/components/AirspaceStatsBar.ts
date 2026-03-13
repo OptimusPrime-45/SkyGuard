@@ -1,23 +1,60 @@
 /**
  * AirspaceStatsBar — Horizontal stats bar above the map showing
  * tracked objects, alerts, classification breakdown, avg risk.
+ * Includes simulation toggle button.
  */
 import type { RadarFlight } from '@/services/radar-stream';
+import { 
+  isSimulationActive, 
+  toggleSimulation, 
+  getSimulationState,
+} from '@/services/simulation';
 
 export class AirspaceStatsBar {
   private el: HTMLElement;
+  private onSimulationToggle?: () => void;
 
   constructor() {
     this.el = document.createElement('div');
     this.el.className = 'airspace-stats-bar';
     this.el.innerHTML = this.buildEmpty();
+    this.setupSimulationButton();
   }
 
   getElement(): HTMLElement {
     return this.el;
   }
 
+  setOnSimulationToggle(cb: () => void): void {
+    this.onSimulationToggle = cb;
+  }
+
+  private setupSimulationButton(): void {
+    this.el.addEventListener('click', (e) => {
+      const target = e.target as HTMLElement;
+      if (target.closest('.sim-btn')) {
+        toggleSimulation();
+        this.updateSimButtonState();
+        this.onSimulationToggle?.();
+      }
+    });
+  }
+
+  private updateSimButtonState(): void {
+    const btn = this.el.querySelector('.sim-btn') as HTMLElement;
+    if (!btn) return;
+    const active = isSimulationActive();
+    btn.classList.toggle('active', active);
+    btn.innerHTML = active 
+      ? '<span class="sim-icon">⏹</span> STOP SIM' 
+      : '<span class="sim-icon">▶</span> SIMULATE';
+    btn.title = active ? 'Stop simulation mode' : 'Start emergency simulation mode';
+  }
+
   update(flights: RadarFlight[]): void {
+    const simActive = isSimulationActive();
+    const simState = simActive ? getSimulationState() : null;
+    
     const tracked = flights.length;
     const alerts = flights.filter(f => f.is_anomaly || f.anomaly_score > 0.75).length;
     const anomalies = flights.filter(f => f.is_anomaly).length;
@@ -32,19 +69,24 @@ export class AirspaceStatsBar {
     }
 
     const riskColor = avgRisk > 60 ? '#ff4444' : avgRisk > 30 ? '#ff8800' : '#44cc44';
+    const alertColor = alerts > 0 ? '#ff4444' : 'inherit';
+    const anomalyColor = anomalies > 0 ? '#ff8800' : 'inherit';
+    
+    // Blinking effect for simulation mode
+    const blinkClass = simActive && simState?.blinkOn ? 'blink-on' : '';
 
     this.el.innerHTML = `
       <div class="stats-item">
         <span class="stats-label">TRACKED</span>
         <span class="stats-value">${tracked}</span>
       </div>
-      <div class="stats-item stats-alerts">
+      <div class="stats-item stats-alerts ${alerts > 0 ? blinkClass : ''}">
         <span class="stats-label">ALERTS</span>
-        <span class="stats-value" style="color:#ff4444">${alerts}</span>
+        <span class="stats-value" style="color:${alertColor}">${alerts}</span>
       </div>
-      <div class="stats-item">
+      <div class="stats-item ${anomalies > 0 ? blinkClass : ''}">
         <span class="stats-label">ANOMALIES</span>
-        <span class="stats-value" style="color:#ff8800">${anomalies}</span>
+        <span class="stats-value" style="color:${anomalyColor}">${anomalies}</span>
       </div>
       <div class="stats-item">
         <span class="stats-label">AVG RISK</span>
@@ -57,10 +99,15 @@ export class AirspaceStatsBar {
           <span class="stats-value">${count}</span>
         </div>
       `).join('')}
+      <div class="stats-spacer"></div>
+      <button class="sim-btn ${simActive ? 'active' : ''}" title="${simActive ? 'Stop simulation' : 'Start emergency simulation'}">
+        <span class="sim-icon">${simActive ? '⏹' : '▶'}</span> ${simActive ? 'STOP SIM' : 'SIMULATE'}
+      </button>
     `;
   }
 
   private buildEmpty(): string {
+    const simActive = isSimulationActive();
     return `
       <div class="stats-item">
         <span class="stats-label">TRACKED</span>
@@ -78,6 +125,10 @@ export class AirspaceStatsBar {
         <span class="stats-label">AVG RISK</span>
         <span class="stats-value">—</span>
       </div>
+      <div class="stats-spacer"></div>
+      <button class="sim-btn ${simActive ? 'active' : ''}" title="${simActive ? 'Stop simulation' : 'Start emergency simulation'}">
+        <span class="sim-icon">${simActive ? '⏹' : '▶'}</span> ${simActive ? 'STOP SIM' : 'SIMULATE'}
+      </button>
     `;
   }
 }

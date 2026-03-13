@@ -402,10 +402,10 @@ export class MapContainer {
     if (this.useDeckGL) { this.deckGLMap?.setImageryScenes(scenes); }
   }
 
-  public setWeatherAlerts(alerts: WeatherAlert[]): void {
+  public setWeatherAlerts(alerts: WeatherAlert[], status?: string): void {
     this.cachedWeatherAlerts = alerts;
-    if (this.useGlobe) { this.globeMap?.setWeatherAlerts(alerts); return; }
-    if (this.useDeckGL) { this.deckGLMap?.setWeatherAlerts(alerts); } else { this.svgMap?.setWeatherAlerts(alerts); }
+    if (this.useGlobe) { this.globeMap?.setWeatherAlerts(alerts, status); return; }
+    if (this.useDeckGL) { this.deckGLMap?.setWeatherAlerts(alerts, status); } else { this.svgMap?.setWeatherAlerts(alerts, status); }
   }
 
   public setOutages(outages: InternetOutage[]): void {
@@ -468,6 +468,10 @@ export class MapContainer {
 
   public setAircraftPositions(positions: PositionSample[]): void {
     this.cachedAircraftPositions = positions;
+    if (this.useGlobe) {
+      this.globeMap?.setAircraftPositions(positions);
+      return;
+    }
     if (this.useDeckGL) {
       this.deckGLMap?.setAircraftPositions(positions);
     } else {

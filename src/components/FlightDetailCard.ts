@@ -25,6 +25,7 @@ export class FlightDetailCard {
 
   show(flight: RadarFlight): void {
     this.currentFlight = flight;
+    window.dispatchEvent(new CustomEvent('skyguard-flight-selected', { detail: { flightId: flight.flight_id } }));
     const score = Math.round((flight.anomaly_score ?? 0) * 100);
     const riskColor = score > 85 ? '#ff4444' : score > 70 ? '#ff8800' : score > 50 ? '#ffcc00' : '#44cc44';
     const badgeClass = score > 85 ? 'critical' : score > 70 ? 'high' : score > 50 ? 'medium' : 'low';
@@ -103,6 +104,7 @@ export class FlightDetailCard {
   hide(): void {
     this.el.classList.add('hidden');
     this.currentFlight = null;
+    window.dispatchEvent(new CustomEvent('skyguard-flight-selected', { detail: { flightId: null } }));
   }
 
   destroy(): void {

@@ -29,11 +29,13 @@ const def = (
 export const LAYER_REGISTRY: Partial<Record<keyof MapLayers, LayerDefinition>> = {
   flights:    def('flights',    '&#9992;',   'flightDelays',       'Aviation'),
   weather:    def('weather',    '&#9928;',   'weatherAlerts',      'Weather Alerts'),
+  warzones:   def('warzones',   '&#9888;',   'warzones',           'Warzones'),
+  noFlyZones: def('noFlyZones', '&#128683;', 'noFlyZones',         'No-Fly Zones'),
   dayNight:   def('dayNight',   '&#127763;', 'dayNight',           'Day/Night', ['flat']),
 };
 
 const VARIANT_LAYER_ORDER: Record<MapVariant, Array<keyof MapLayers>> = {
-  full: ['flights', 'weather', 'dayNight'],
+  full: ['warzones', 'noFlyZones', 'flights', 'weather', 'dayNight'],
 };
 
 const I18N_PREFIX = 'components.deckgl.layers.';
@@ -69,6 +71,15 @@ export const LAYER_SYNONYMS: Record<string, Array<keyof MapLayers>> = {
   hurricane: ['weather'],
   night: ['dayNight'],
   sun: ['dayNight'],
+  war: ['warzones'],
+  conflict: ['warzones'],
+  combat: ['warzones'],
+  battle: ['warzones'],
+  restricted: ['noFlyZones'],
+  prohibited: ['noFlyZones'],
+  tfr: ['noFlyZones'],
+  notam: ['noFlyZones'],
+  airspace: ['noFlyZones', 'warzones'],
 };
 
 export function resolveLayerLabel(def: LayerDefinition, tFn?: (key: string) => string): string {

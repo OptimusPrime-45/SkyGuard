@@ -1,10 +1,12 @@
 /**
  * ThreatCenterPanel — "High-Risk Objects" sidebar panel.
  * Displays flights where is_anomaly === true or anomaly_score > 0.7.
+ * Also shows simulated alerts when simulation mode is active.
  */
 import { Panel } from "./Panel";
 import type { RadarFlight } from "@/services/radar-stream";
 import { getHighRiskFlights, onRadarUpdate } from "@/services/radar-stream";
+import { isSimulationActive, getSimulatedAlerts, type SimulatedAlert } from "@/services/simulation";
 import { h, replaceChildren } from "@/utils/dom-utils";
 
 export class ThreatCenterPanel extends Panel {
@@ -49,7 +51,17 @@ export class ThreatCenterPanel extends Panel {
     const body = this.content;
     if (!body) return;
 
-    if (this._flights.length === 0) {
+    const elements: HTMLElement[] = [];
+    
+    // Check for simulation mode alerts
+    if (isSimulationActive()) {
+      const alerts = getSimulatedAlerts();
+      if (alerts.length > 0) {
+        elements.push(this.renderAlertsSection(alerts));
+      }
+    }
+
+    if (this._flights.length === 0 && elements.length === 0) {
       replaceChildren(
         body,
         h(
@@ -64,8 +76,76 @@ export class ThreatCenterPanel extends Panel {
     const sorted = [...this._flights].sort(
       (a, b) => b.anomaly_score - a.anomaly_score,
     );
-    const items = sorted.map((f) => this.renderFlightItem(f));
-    replaceChildren(body, ...items);
+    const flightItems = sorted.map((f) => this.renderFlightItem(f));
+    elements.push(...flightItems);
+    
+    replaceChildren(body, ...elements);
+  }
+
+  private renderAlertsSection(alerts: SimulatedAlert[]): HTMLElement {
+    const alertItems = alerts.slice(0, 5).map((alert) => {
+      const severityColors: Record<string, string> = {
+        critical: '#ff2222',
+        high: '#ff6600',
+        medium: '#ffaa00',
+        low: '#88cc44',
+      };
+      const severityIcons: Record<string, string> = {
+        critical: '🚨',
+        high: '⚠️',
+        medium: '⚡',
+        low: 'ℹ️',
+      };
+      const typeIcons: Record<string, string> = {
+        intrusion: '🛑',
+        emergency: '🆘',
+        squawk: '📡',
+        anomaly: '❓',
+        drone: '🛸',
+        restricted_zone: '🚫',
+        intercept: '🎯',
+      };
+
+      const color = severityColors[alert.severity] ?? '#ff6600';
+      const icon = typeIcons[alert.type] ?? severityIcons[alert.severity] ?? '⚠️';
+      const timeAgo = this.formatTimeAgo(alert.timestamp);
+
+      return h(
+        "div",
+        { className: `alert-item severity-${alert.severity}`, "data-alert-id": alert.id },
+        h(
+          "div",
+          { className: "alert-header" },
+          h("span", { className: "alert-icon" }, icon),
+          h("span", { className: "alert-title", style: `color:${color}` }, alert.title),
+        ),
+        h(
+          "div",
+          { className: "alert-body" },
+          h("span", { className: "alert-desc" }, alert.description),
+        ),
+        h(
+          "div",
+          { className: "alert-footer" },
+          h("span", { className: "alert-flight" }, `Flight: ${alert.flightId}`),
+          h("span", { className: "alert-time" }, timeAgo),
+        ),
+      );
+    });
+
+    return h(
+      "div",
+      { className: "alerts-section" },
+      h("div", { className: "alerts-header" }, "🚨 ACTIVE ALERTS"),
+      ...alertItems,
+    );
+  }
+
+  private formatTimeAgo(date: Date): string {
+    const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
+    if (seconds < 60) return `${seconds}s ago`;
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+    return `${Math.floor(seconds / 3600)}h ago`;
   }
 
   private renderFlightItem(flight: RadarFlight): HTMLElement {
@@ -82,6 +162,7 @@ export class ThreatCenterPanel extends Panel {
       "div",
       {
         className: `threat-item ${flight.is_anomaly ? "anomaly" : ""}`,
+        "data-fid": flight.flight_id,
         onclick: () => this._onFlightClick?.(flight),
       },
       h(
@@ -132,7 +213,7 @@ export class ThreatCenterPanel extends Panel {
           h(
             "span",
             {
-              className: `threat-value ${flight.squawk === "7700" ? "squawk-emergency" : ""}`,
+              className: `threat-value ${flight.squawk === "7700" || flight.squawk === "7500" || flight.squawk === "7600" ? "squawk-emergency" : ""}`,
             },
             flight.squawk ?? "—",
           ),

@@ -42,6 +42,22 @@ import { fetchAircraftPositions } from '@/services/aviation';
 import { type IranEvent, getIranEventColor, getIranEventRadius } from '@/services/conflict';
 import type { GpsJamHex } from '@/services/gps-interference';
 import { fetchImageryScenes, type ImageryScene } from '@/services/imagery';
+import { 
+  fetchAirspaceRestrictions, 
+  restrictionsToGeoJSON,
+  isInCriticalZone,
+  type AirspaceRestrictionsData,
+} from '@/services/airspace-restrictions';
+import { isSimulationActive, getSimulationState } from '@/services/simulation';
+import { 
+  getAviationWeather, 
+  weatherToHazards, 
+  getHazardSeverityColor,
+  getHazardTypeIcon,
+  type WeatherHazard,
+  type METAR,
+  getFlightCategoryColor,
+} from '@/services/aviation-weather';
 import type { DisplacementFlow } from '@/services/displacement';
 import type { Earthquake } from '@/services/earthquakes';
 import type { ClimateAnomaly } from '@/services/climate';
@@ -344,6 +360,15 @@ export class DeckGLMap {
   private renewableInstallations: RenewableInstallation[] = [];
   private countriesGeoJsonData: FeatureCollection<Geometry> | null = null;
   private conflictZoneGeoJson: GeoJSON.FeatureCollection | null = null;
+
+  // Airspace restrictions data (warzones + no-fly zones)
+  private airspaceRestrictionsData: AirspaceRestrictionsData | null = null;
+  private airspaceRestrictionsGeoJson: GeoJSON.FeatureCollection | null = null;
+  private airspaceRestrictionsFetchTimer: ReturnType<typeof setInterval> | null = null;
+
+  // Aviation weather data (SIGMET, AIRMET, METAR-based hazards)
+  private aviationWeatherHazards: WeatherHazard[] = [];
+  private aviationWeatherFetchTimer: ReturnType<typeof setInterval> | null = null;
 
   // CII choropleth data
   private ciiScoresMap: Map<string, { score: number; level: string }> = new Map();
@@ -1230,6 +1255,20 @@ export class DeckGLMap {
       layers.push(this.createConflictZonesLayer());
     }
 
+    // Warzones layer (real-time active conflict zones with no-fly advisories)
+    if (mapLayers.warzones) {
+      layers.push(this.createWarzonesLayer());
+    }
+
+    // No-fly zones layer (TFRs, restricted airspace, prohibited zones)
+    if (mapLayers.noFlyZones) {
+      layers.push(this.createNoFlyZonesLayer());
+    }
+
+    // Aviation weather hazards layer (SIGMET, AIRMET, turbulence, icing)
+    if (mapLayers.weather && this.aviationWeatherHazards.length > 0) {
+      layers.push(this.createAviationWeatherHazardsLayer());
+    }
 
     // Military bases layer — hidden at low zoom (E: progressive disclosure) + clusters
     if (mapLayers.bases && this.isLayerVisible('bases')) {
@@ -1604,11 +1643,16 @@ export class DeckGLMap {
     const t = performance.now() / 1000;
     const pulse = Math.sin(t * Math.PI) * 0.5 + 0.5;
     const pulseRadius = 16 + (pulse * 8);
+    
+    // Enhanced blinking for simulation mode
+    const simActive = isSimulationActive();
+    const simState = simActive ? getSimulationState() : null;
+    const blinkOn = simState?.blinkOn ?? true;
 
     layers.push(new IconLayer({
       id: 'radar-flights-icon',
       data: this.radarFlights,
-      updateTriggers: { getSize: [t] },
+      updateTriggers: { getSize: [t], getColor: [blinkOn] },
       pickable: true,
       iconAtlas: MARKER_ICONS.plane,
       iconMapping: AIRCRAFT_ICON_MAPPING,
@@ -1616,7 +1660,16 @@ export class DeckGLMap {
       getPosition: (d: any) => [d.lon, d.lat],
       getSize: (d: any) => (d.ml_classification === 'Drone/UAV' || d.is_anomaly) ? pulseRadius : 20,
       getColor: (d: any) => {
-        if (d.ml_classification === 'Drone/UAV' || d.is_anomaly) return [255, 50, 50, 255];
+        // Blinking red for anomalies/drones, especially in simulation mode
+        if (d.ml_classification === 'Drone/UAV' || d.is_anomaly) {
+          // In simulation mode, blink between bright red and darker red
+          if (simActive && blinkOn) {
+            return [255, 50, 50, 255]; // Bright red
+          } else if (simActive) {
+            return [180, 30, 30, 200]; // Darker red (blink off)
+          }
+          return [255, 50, 50, 255];
+        }
         return [50, 150, 255, 255];
       },
       getAngle: (d: any) => -1 * (d.heading || 0),
@@ -1755,6 +1808,391 @@ export class DeckGLMap {
       pickable: true,
     });
     return layer;
+  }
+
+  /**
+   * Fetch and cache airspace restrictions data
+   */
+  private async fetchAirspaceRestrictionsData(): Promise<void> {
+    try {
+      const data = await fetchAirspaceRestrictions();
+      if (data) {
+        this.airspaceRestrictionsData = data;
+        this.airspaceRestrictionsGeoJson = restrictionsToGeoJSON(data);
+        this.render();
+      }
+    } catch (err) {
+      console.warn('[DeckGLMap] Failed to fetch airspace restrictions:', err);
+    }
+  }
+
+  /**
+   * Start periodic fetching of airspace restrictions
+   */
+  private startAirspaceRestrictionsFetch(): void {
+    if (this.airspaceRestrictionsFetchTimer) return;
+    
+    // Initial fetch
+    this.fetchAirspaceRestrictionsData();
+    
+    // Refresh every 5 minutes
+    this.airspaceRestrictionsFetchTimer = setInterval(() => {
+      this.fetchAirspaceRestrictionsData();
+    }, 5 * 60 * 1000);
+  }
+
+  /**
+   * Get airspace restrictions statistics
+   */
+  public getAirspaceRestrictionsStats(): { warzones: number; noFlyZones: number; tfrs: number } | null {
+    if (!this.airspaceRestrictionsData) return null;
+    return {
+      warzones: this.airspaceRestrictionsData.stats.activeWarzones,
+      noFlyZones: this.airspaceRestrictionsData.stats.noFlyZones,
+      tfrs: this.airspaceRestrictionsData.stats.tfrsActive,
+    };
+  }
+
+  /**
+   * Stop periodic fetching of airspace restrictions
+   */
+  private stopAirspaceRestrictionsFetch(): void {
+    if (this.airspaceRestrictionsFetchTimer) {
+      clearInterval(this.airspaceRestrictionsFetchTimer);
+      this.airspaceRestrictionsFetchTimer = null;
+    }
+  }
+
+  /**
+   * Create warzones layer - shows active conflict zones where aviation is prohibited
+   */
+  private createWarzonesLayer(): GeoJsonLayer | null {
+    // Start fetching if not already
+    if (!this.airspaceRestrictionsFetchTimer) {
+      this.startAirspaceRestrictionsFetch();
+    }
+
+    if (!this.airspaceRestrictionsGeoJson) return null;
+
+    // Filter to only warzones
+    const warzoneFeatures = this.airspaceRestrictionsGeoJson.features.filter(
+      f => f.properties?.kind === 'warzone'
+    );
+
+    if (warzoneFeatures.length === 0) return null;
+
+    const isLight = getCurrentTheme() === 'light';
+
+    return new GeoJsonLayer({
+      id: 'warzones-layer',
+      data: {
+        type: 'FeatureCollection',
+        features: warzoneFeatures,
+      },
+      filled: true,
+      stroked: true,
+      getFillColor: (f: any) => {
+        const severity = f.properties?.severity;
+        if (severity === 'critical') return isLight ? [255, 0, 0, 50] : [255, 0, 0, 80];
+        if (severity === 'high') return isLight ? [255, 68, 68, 40] : [255, 68, 68, 70];
+        return isLight ? [255, 100, 100, 30] : [255, 100, 100, 60];
+      },
+      getLineColor: (f: any) => {
+        const severity = f.properties?.severity;
+        if (severity === 'critical') return [255, 0, 0, 255];
+        if (severity === 'high') return [255, 68, 68, 220];
+        return [255, 100, 100, 180];
+      },
+      getLineWidth: 3,
+      lineWidthMinPixels: 2,
+      pickable: true,
+      autoHighlight: true,
+      highlightColor: [255, 0, 0, 100],
+      onClick: (info: PickingInfo) => {
+        if (info.object?.properties) {
+          const props = info.object.properties;
+          this.showWarzonePopup(info, props);
+        }
+      },
+    });
+  }
+
+  /**
+   * Create no-fly zones layer - TFRs, restricted airspace, prohibited areas
+   */
+  private createNoFlyZonesLayer(): GeoJsonLayer | null {
+    // Start fetching if not already
+    if (!this.airspaceRestrictionsFetchTimer) {
+      this.startAirspaceRestrictionsFetch();
+    }
+
+    if (!this.airspaceRestrictionsGeoJson) return null;
+
+    // Filter to only restrictions (not warzones)
+    const restrictionFeatures = this.airspaceRestrictionsGeoJson.features.filter(
+      f => f.properties?.kind === 'restriction'
+    );
+
+    if (restrictionFeatures.length === 0) return null;
+
+    const isLight = getCurrentTheme() === 'light';
+
+    return new GeoJsonLayer({
+      id: 'no-fly-zones-layer',
+      data: {
+        type: 'FeatureCollection',
+        features: restrictionFeatures,
+      },
+      filled: true,
+      stroked: true,
+      getFillColor: (f: any) => {
+        const type = f.properties?.type;
+        const source = f.properties?.source;
+        const severity = f.properties?.severity;
+
+        // Weather severe hazards - intense purple/magenta to stand out
+        if (source === 'weather' && (severity === 'critical' || severity === 'high')) {
+          return isLight ? [200, 0, 120, 80] : [255, 40, 140, 120];
+        }
+
+        // Prohibited zones - solid red
+        if (type === 'prohibited' || type === 'no-fly') {
+          return isLight ? [220, 0, 0, 60] : [220, 0, 0, 90];
+        }
+        // Restricted zones - orange
+        if (type === 'restricted' || type === 'danger') {
+          return isLight ? [255, 140, 0, 50] : [255, 140, 0, 80];
+        }
+        // TFRs - yellow/amber
+        if (type === 'tfr') {
+          return isLight ? [255, 200, 0, 45] : [255, 200, 0, 75];
+        }
+        // Conflict advisories - pink
+        if (type === 'conflict-advisory') {
+          return isLight ? [255, 100, 150, 40] : [255, 100, 150, 70];
+        }
+        // Default
+        return isLight ? [200, 100, 100, 35] : [200, 100, 100, 65];
+      },
+      getLineColor: (f: any) => {
+        const type = f.properties?.type;
+        
+        const source = f.properties?.source;
+        const severity = f.properties?.severity;
+        // Weather severe hazards - bright outline
+        if (source === 'weather' && (severity === 'critical' || severity === 'high')) {
+          return [255, 40, 140, 255];
+        }
+        if (type === 'prohibited' || type === 'no-fly') {
+          return [220, 0, 0, 255];
+        }
+        if (type === 'restricted' || type === 'danger') {
+          return [255, 140, 0, 230];
+        }
+        if (type === 'tfr') {
+          return [255, 200, 0, 220];
+        }
+        if (type === 'conflict-advisory') {
+          return [255, 100, 150, 200];
+        }
+        return [200, 100, 100, 180];
+      },
+      getLineWidth: 2,
+      lineWidthMinPixels: 1,
+      lineDashArray: (f: any) => {
+        const type = f.properties?.type;
+        // Dashed for temporary restrictions (TFRs)
+        if (type === 'tfr') return [8, 4];
+        return null;
+      },
+      pickable: true,
+      autoHighlight: true,
+      highlightColor: [255, 150, 0, 100],
+      onClick: (info: PickingInfo) => {
+        if (info.object?.properties) {
+          const props = info.object.properties;
+          this.showNoFlyZonePopup(info, props);
+        }
+      },
+    });
+  }
+
+  /**
+   * Show popup for warzone
+   */
+  private showWarzonePopup(info: PickingInfo, props: any): void {
+    // Use conflict popup type with custom data
+    this.popup.show({ 
+      type: 'conflict', 
+      data: { 
+        id: props.id || 'warzone',
+        name: props.name || 'Active Warzone',
+        center: [props.lon || 0, props.lat || 0] as [number, number],
+        coords: [],
+        description: `⛔ NO COMMERCIAL AVIATION\n${props.description || ''}`,
+        parties: props.parties ? props.parties.split(', ') : [],
+        intensity: 'high',
+      }, 
+      x: info.x, 
+      y: info.y 
+    });
+  }
+
+  /**
+   * Show popup for no-fly zone
+   */
+  private showNoFlyZonePopup(info: PickingInfo, props: any): void {
+    const typeLabels: Record<string, string> = {
+      'prohibited': '🚫 Prohibited Airspace (P-Zone)',
+      'no-fly': '🚫 No-Fly Zone',
+      'restricted': '⚠️ Restricted Airspace (R-Zone)',
+      'danger': '⚠️ Danger Area (D-Zone)',
+      'tfr': '📋 Temporary Flight Restriction',
+      'conflict-advisory': '⚔️ Conflict Zone Advisory',
+      'special-use': '🔒 Special Use Airspace',
+    };
+
+    const type = props.type || 'restricted';
+    const typeLabel = typeLabels[type] || 'Airspace Restriction';
+
+    // Use conflict popup type with custom data
+    this.popup.show({ 
+      type: 'conflict', 
+      data: { 
+        id: props.id || 'nofly',
+        name: `${typeLabel}: ${props.name || 'Unknown Zone'}`,
+        center: [props.lon || 0, props.lat || 0] as [number, number],
+        coords: [],
+        description: `${props.reason || 'Airspace Restriction'}\nSeverity: ${props.severity || 'Unknown'}\nCountry: ${props.country || 'Unknown'}\nSource: ${props.source || 'FAA/ICAO'}`,
+        intensity: props.severity === 'critical' ? 'high' : props.severity === 'high' ? 'medium' : 'low',
+      }, 
+      x: info.x, 
+      y: info.y 
+    });
+  }
+
+  /**
+   * Create aviation weather hazards layer (SIGMET, AIRMET, turbulence, icing, thunderstorms)
+   */
+  private createAviationWeatherHazardsLayer(): PolygonLayer | null {
+    if (!this.aviationWeatherHazards.length) return null;
+
+    const isLight = getCurrentTheme() === 'light';
+
+    return new PolygonLayer({
+      id: 'aviation-weather-hazards-layer',
+      data: this.aviationWeatherHazards,
+      getPolygon: (d) => d.coordinates,
+      filled: true,
+      stroked: true,
+      getFillColor: (d) => {
+        // Use severity-based coloring from aviation-weather service
+        const color = getHazardSeverityColor(d.severity);
+        const alphaMultiplier = isLight ? 0.5 : 0.8;
+        return [color[0], color[1], color[2], Math.round(color[3] * alphaMultiplier)] as [number, number, number, number];
+      },
+      getLineColor: (d) => {
+        const color = getHazardSeverityColor(d.severity);
+        return [color[0], color[1], color[2], 220] as [number, number, number, number];
+      },
+      getLineWidth: 2,
+      lineWidthMinPixels: 1,
+      pickable: true,
+      autoHighlight: true,
+      highlightColor: [255, 255, 0, 80],
+      onClick: (info: PickingInfo) => {
+        if (info.object) {
+          this.showWeatherHazardPopup(info, info.object);
+        }
+      },
+    });
+  }
+
+  /**
+   * Show popup for aviation weather hazard
+   */
+  private showWeatherHazardPopup(info: PickingInfo, hazard: WeatherHazard): void {
+    const icon = getHazardTypeIcon(hazard.type);
+    const severityLabels: Record<string, string> = {
+      'extreme': '🔴 EXTREME',
+      'severe': '🟠 SEVERE',
+      'moderate': '🟡 MODERATE',
+      'light': '🟢 LIGHT',
+    };
+    
+    const typeLabels: Record<string, string> = {
+      'thunderstorm': 'Convective Activity / Thunderstorms',
+      'turbulence': 'Turbulence',
+      'icing': 'Icing Conditions',
+      'volcanic_ash': 'Volcanic Ash Advisory',
+      'dust_sand': 'Dust/Sand Storm',
+      'low_visibility': 'Low Visibility / IFR Conditions',
+      'wind_shear': 'Wind Shear',
+      'mountain_wave': 'Mountain Wave Activity',
+    };
+
+    const description = [
+      `${icon} ${typeLabels[hazard.type] || hazard.type.toUpperCase()}`,
+      `Severity: ${severityLabels[hazard.severity] || hazard.severity}`,
+      hazard.description || '',
+      `Valid: ${hazard.validFrom.toLocaleTimeString()} - ${hazard.validTo.toLocaleTimeString()}`,
+      hazard.altitudeLower !== undefined && hazard.altitudeUpper !== undefined 
+        ? `Altitude: FL${Math.round(hazard.altitudeLower / 100)} - FL${Math.round(hazard.altitudeUpper / 100)}`
+        : '',
+    ].filter(Boolean).join('\n');
+
+    this.popup.show({
+      type: 'conflict',
+      data: {
+        id: hazard.id,
+        name: `Aviation Weather: ${typeLabels[hazard.type] || hazard.type}`,
+        center: hazard.centroid,
+        coords: [],
+        description,
+        intensity: hazard.severity === 'extreme' || hazard.severity === 'severe' ? 'high' : 'medium',
+      },
+      x: info.x,
+      y: info.y,
+    });
+  }
+
+  /**
+   * Fetch aviation weather data and update hazards
+   */
+  public async fetchAviationWeather(): Promise<void> {
+    try {
+      const weatherData = await getAviationWeather();
+      this.aviationWeatherHazards = weatherToHazards(weatherData);
+      this.debouncedRebuildLayers();
+      console.log(`[DeckGLMap] Loaded ${this.aviationWeatherHazards.length} aviation weather hazards`);
+    } catch (err) {
+      console.warn('[DeckGLMap] Failed to fetch aviation weather:', err);
+    }
+  }
+
+  /**
+   * Start periodic aviation weather fetching
+   */
+  private startAviationWeatherFetch(): void {
+    if (this.aviationWeatherFetchTimer) return;
+    
+    // Initial fetch
+    this.fetchAviationWeather();
+    
+    // Refresh every 10 minutes (weather data updates frequently)
+    this.aviationWeatherFetchTimer = setInterval(() => {
+      this.fetchAviationWeather();
+    }, 10 * 60 * 1000);
+  }
+
+  /**
+   * Stop aviation weather fetching
+   */
+  private stopAviationWeatherFetch(): void {
+    if (this.aviationWeatherFetchTimer) {
+      clearInterval(this.aviationWeatherFetchTimer);
+      this.aviationWeatherFetchTimer = null;
+    }
   }
 
 
@@ -1961,14 +2399,24 @@ export class DeckGLMap {
       getIcon: () => 'plane',
       iconAtlas: MARKER_ICONS.plane,
       iconMapping: AIRCRAFT_ICON_MAPPING,
-      getSize: (d) => d.onGround ? 14 : 18,
+      getSize: (d) => {
+        if (d.onGround) return 14;
+        // Check if aircraft is in a critical zone - make it larger
+        const check = isInCriticalZone(d.lat, d.lon);
+        return check.inZone ? 24 : 18;
+      },
       getColor: (d) => {
         if (d.onGround) return [120, 120, 120, 160] as [number, number, number, number];
+        // Check if aircraft is in a critical zone - make it RED to indicate violation
+        const check = isInCriticalZone(d.lat, d.lon);
+        if (check.inZone) {
+          return [255, 40, 40, 255] as [number, number, number, number]; // Bright red for violation
+        }
         return [160, 100, 255, 220] as [number, number, number, number]; // Purple for all airborne
       },
       getAngle: (d) => -d.trackDeg,
       sizeMinPixels: 8,
-      sizeMaxPixels: 28,
+      sizeMaxPixels: 32,
       sizeScale: 1,
       pickable: true,
       billboard: false,
@@ -3471,8 +3919,13 @@ export class DeckGLMap {
         return { html: `<div class="deckgl-tooltip"><strong>${text(obj.name)} (${text(obj.iata)})</strong><br/>${text(obj.severity)}: ${text(obj.reason)}</div>` };
       case 'notam-overlay-layer':
         return { html: `<div class="deckgl-tooltip"><strong style="color:#ff2828;">&#9888; NOTAM CLOSURE</strong><br/>${text(obj.name)} (${text(obj.iata)})<br/><span style="opacity:.7">${text((obj.reason || '').slice(0, 100))}</span></div>` };
-      case 'aircraft-positions-layer':
-        return { html: `<div class="deckgl-tooltip"><strong>${text(obj.callsign || obj.icao24)}</strong><br/>${obj.altitudeFt?.toLocaleString() ?? 0} ft · ${obj.groundSpeedKts ?? 0} kts · ${Math.round(obj.trackDeg ?? 0)}°</div>` };
+      case 'aircraft-positions-layer': {
+        const violation = isInCriticalZone(obj.lat, obj.lon);
+        const violationHtml = violation.inZone 
+          ? `<br/><span style="color:#ff2020;font-weight:bold;">⚠️ IN RESTRICTED ZONE: ${text(violation.zoneName || 'Unknown')}</span>` 
+          : '';
+        return { html: `<div class="deckgl-tooltip"><strong>${text(obj.callsign || obj.icao24)}</strong><br/>${obj.altitudeFt?.toLocaleString() ?? 0} ft · ${obj.groundSpeedKts ?? 0} kts · ${Math.round(obj.trackDeg ?? 0)}°${violationHtml}</div>` };
+      }
       case 'apt-groups-layer':
         return { html: `<div class="deckgl-tooltip"><strong>${text(obj.name)}</strong><br/>${text(obj.aka)}<br/>${t('popups.sponsor')}: ${text(obj.sponsor)}</div>` };
       case 'minerals-layer':
@@ -4574,8 +5027,36 @@ export class DeckGLMap {
     this.render();
   }
 
-  public setWeatherAlerts(alerts: WeatherAlert[]): void {
+  public setWeatherAlerts(alerts: WeatherAlert[], status?: string): void {
     this.weatherAlerts = alerts;
+    // store the NWS status string (if provided) for small overlay/status UI
+    // ...existing code...
+    (this as any).weatherStatus = status ?? null;
+    // update a small overlay element if present
+    try {
+  const root = (this as any).container ?? document.body;
+      let el = root.querySelector('#nws-status') as HTMLElement | null;
+      if (!el) {
+        el = document.createElement('div');
+        el.id = 'nws-status';
+        el.className = 'nws-status-overlay';
+        el.style.position = 'absolute';
+        el.style.right = '8px';
+        el.style.top = '8px';
+        el.style.padding = '6px 8px';
+        el.style.zIndex = '6000';
+        el.style.borderRadius = '6px';
+        el.style.fontSize = '12px';
+        el.style.background = 'rgba(0,0,0,0.6)';
+        el.style.color = 'white';
+        (root as HTMLElement).appendChild(el);
+      }
+      el.textContent = status ? `NWS: ${status}` : '';
+      el.style.display = status ? 'block' : 'none';
+    } catch (e) {
+      // swallow DOM errors
+    }
+
     this.render();
   }
 
@@ -5485,6 +5966,7 @@ export class DeckGLMap {
     }
     this.stopPulseAnimation();
     this.stopDayNightTimer();
+    this.stopAirspaceRestrictionsFetch();
     if (this.aircraftFetchTimer) {
       clearInterval(this.aircraftFetchTimer);
       this.aircraftFetchTimer = null;
