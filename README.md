@@ -11,10 +11,10 @@ SkyGuard is a real-time airspace monitoring and threat detection platform. It co
 - **Alternatives:** JavaScript (less safe), Babel+Webpack (slower, more config).
 - **Decision:** TypeScript with Vite for fast dev/build and strong typing.
 
-### 2. React (implied by Vite + component structure)
-- **Why:** Component-based UI, large ecosystem, easy state management.
+### 2. Preact (React-compatible)
+- **Why:** Lightweight, component-based UI with compatibility with the React ecosystem and patterns.
 - **Alternatives:** Vue, Svelte, Angular.
-- **Decision:** React is industry standard, integrates well with mapping libs.
+- **Decision:** Preact offers a smaller bundle size while remaining largely compatible with React libraries and integrating well with mapping libs.
 
 ### 3. deck.gl + maplibre-gl
 - **Why:** High-performance WebGL map rendering, supports custom layers, open-source.
@@ -40,7 +40,7 @@ SkyGuard is a real-time airspace monitoring and threat detection platform. It co
 
 ## Web Technologies & APIs
 
-- **Frontend:** TypeScript, React, Vite, deck.gl, maplibre-gl, custom components.
+- **Frontend:** TypeScript, Preact, Vite, deck.gl, maplibre-gl, custom components.
 - **Backend:** FastAPI (Python), RESTful APIs, model serving endpoints.
 - **APIs:**
   - `/api/bootstrap?keys=weatherAlerts` — returns weather alert data.
