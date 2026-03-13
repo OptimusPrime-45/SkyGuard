@@ -226,6 +226,7 @@ export function startSimulation(): void {
   _blinkState = true;
   _blinkIntervalId = setInterval(() => {
     _blinkState = !_blinkState;
+    notifyListeners();
   }, 500);
   
   // Periodic updates — simulate movement + occasional new events
