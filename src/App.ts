@@ -232,6 +232,8 @@ export class App {
 
     // Start radar stream — polls FastAPI /api/radar/stream every 10s
     this.unsubRadar = onRadarUpdate((flights) => {
+      // Always keep the latest real (non-simulated) radar flights
+      (this as any)._latestRealRadarFlights = flights;
       processFlights(flights);
     });
     startRadarStream();
@@ -240,15 +242,17 @@ export class App {
     const statsBar = (this.state as any).statsBar;
     if (statsBar && typeof statsBar.setOnSimulationToggle === "function") {
       statsBar.setOnSimulationToggle(() => {
-        // Re-process current flights with new simulation state
-        const currentFlights = (this.state as any).radarFlights ?? [];
+        // Re-process latest real flights with new simulation state
+        const currentFlights =
+          (this as any)._latestRealRadarFlights ?? [];
         processFlights(currentFlights);
       });
     }
 
     // Also listen to simulation updates directly for real-time updates
     onSimulationUpdate(() => {
-      const currentFlights = (this.state as any).radarFlights ?? [];
+      const currentFlights =
+        (this as any)._latestRealRadarFlights ?? [];
       processFlights(currentFlights);
     });
 
