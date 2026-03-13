@@ -22,6 +22,8 @@ const AIRSPACE_MAP_LAYERS: MapLayers = {
   military: true,
   weather: false,
   dayNight: false,
+  warzones: true,
+  noFlyZones: true,
   // All non-airspace layers disabled
   iranAttacks: false,
   gpsJamming: false,

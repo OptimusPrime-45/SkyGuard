@@ -564,6 +564,9 @@ export interface MapLayers {
   miningSites: boolean;
   processingPlants: boolean;
   commodityPorts: boolean;
+  // Airspace restriction layers
+  warzones: boolean;
+  noFlyZones: boolean;
 }
 
 export interface AIDataCenter {

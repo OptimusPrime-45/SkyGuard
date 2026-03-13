@@ -128,6 +128,23 @@ export function getConfiguredWebApiBaseUrl(): string {
     return '';
   }
 
+  // Local development fallback: when running the frontend dev server on localhost
+  // and Vite exposes DEV=true, prefer contacting a local backend directly so
+  // API calls work even if a dev proxy is not configured or the dev server
+  // is not forwarding /api requests. This only applies in non-desktop dev builds.
+  try {
+    // import.meta.env.DEV is present in Vite and will be true during dev.
+    // Use a runtime check so this code is harmless in production.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const devFlag = (import.meta as any)?.env?.DEV;
+    const hostname = window.location?.hostname ?? '';
+    if (devFlag && (hostname === 'localhost' || hostname === '127.0.0.1')) {
+      return 'http://localhost:8000';
+    }
+  } catch (e) {
+    // ignore and continue to normal resolution
+  }
+
   const hostname = window.location?.hostname ?? '';
   if (!isSkyGuardWebHost(hostname)) {
     return '';

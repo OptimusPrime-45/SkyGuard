@@ -2331,7 +2331,9 @@ export class GlobeMap {
     this.flushMarkers();
   }
 
-  public setWeatherAlerts(alerts: WeatherAlert[]): void {
+  public setWeatherAlerts(alerts: WeatherAlert[], status?: string): void {
+    // store status for optional UI display
+    (this as any).weatherStatus = status ?? null;
     this.weatherMarkers = (alerts ?? [])
       .filter(a => a.centroid != null)
       .map(a => ({

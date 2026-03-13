@@ -53,7 +53,11 @@ export async function fetchWeatherAlerts(): Promise<WeatherAlert[]> {
     }
 
     const resp = await fetch(toApiUrl('/api/bootstrap?keys=weatherAlerts'), { signal: AbortSignal.timeout(8000) });
-    if (!resp.ok) throw new Error(`Bootstrap fetch failed: ${resp.status}`);
+    if (!resp.ok) {
+      // Treat 404 (missing bootstrap key) as "no data" rather than an error.
+      if (resp.status === 404) return [];
+      throw new Error(`Bootstrap fetch failed: ${resp.status}`);
+    }
     const json = await resp.json() as { data?: { weatherAlerts?: { alerts?: BootstrapAlert[] } } };
     const alerts = json.data?.weatherAlerts?.alerts;
     if (alerts?.length) return alerts.map(mapAlert);

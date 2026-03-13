@@ -1041,6 +1041,8 @@
         "fires": "Fires",
         "intelHotspots": "Intel Hotspots",
         "conflictZones": "Conflict Zones",
+        "warzones": "Warzones",
+        "noFlyZones": "No-Fly Zones",
         "militaryBases": "Military Bases",
         "nuclearSites": "Nuclear Sites",
         "gammaIrradiators": "Gamma Irradiators",
